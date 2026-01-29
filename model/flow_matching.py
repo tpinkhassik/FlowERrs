@@ -47,31 +47,72 @@ class ConditionalFlowMatcher(nn.Module):
         matrix = matrix + noise * self.sigma
         
         return matrix
+    
+    def sample_chiral_vec(self, chiral_vec):
+        node_mask = (chiral_vec != MATRIX_PAD)
+        noise = self.zero_centered_noise(chiral_vec.shape, node_mask) # (n, 1, b, d)
+        chiral_vec = chiral_vec + noise * self.sigma
 
-    def sample_conditional_pt(self, x0, x1, t):
+        return chiral_vec
+
+    def sample_conditional_pt(self, be0, be1, cv0, cv1, t):
         """
         Draw a sample from the probability path N(t * x1 + (1 - t) * x0, sigma), see (Eq.14) [1].
 
         Parameters
         ----------
-        x0 : Tensor, shape (bs, *dim)
-            represents the source minibatch
-        x1 : Tensor, shape (bs, *dim)
-            represents the target minibatch
+        be0 : Tensor, shape (bs, *dim)
+            represents the source BE matrix
+        be1 : Tensor, shape (bs, *dim)
+            represents the target BE matrix
+        cv0 : Tensor, shape (bs, *dim)
+            represents the source chiral vector
+        cv1 : Tensor, shape (bs, *dim)
+            represents the target chiral vector
         t : FloatTensor, shape (bs)
 
         Returns
         -------
-        xt : Tensor, shape (bs, *dim)
+        bet : Tensor, shape (bs, *dim)
+
+        cvt : Tensor, shape (bs, *dim)
 
         References
         ----------
         [1] Improving and Generalizing Flow-Based Generative Models with minibatch optimal transport, Preprint, Tong et al.
         """
-        t = t.reshape(-1, *([1] * (x0.dim() - 1)))
-        mu_t = t * x1 + (1 - t) * x0
-        return self.sample_be_matrix(mu_t)
+        tbe = t.reshape(-1, *([1] * (be0.dim() - 1)))
+        bemu_t = tbe * be1 + (1 - tbe) * be0
 
+        
+
+        return self.sample_be_matrix(bemu_t)
+
+        #tcv = t.reshape(-1, *([1] * (cv0.dim() - 1)))
+        #cvmu_t = tcv * cv1 + (1 - tcv) * cv0
+        #return self.sample_be_matrix(bemu_t), self.sample_chiral_vec(cvmu_t)
+
+    #def compute_conditional_vector_field(self, be0, be1, cv0, cv1):
+    #    """
+    #    Compute the conditional vector field ut(x1|x0) = x1 - x0, see Eq.(15) [1].
+
+    #    Parameters
+    #    ----------
+    #    x0 : Tensor, shape (bs, *dim)
+    #        represents the source minibatch
+    #    x1 : Tensor, shape (bs, *dim)
+    #        represents the target minibatch
+
+    #    Returns
+    #    -------
+    #    ut : conditional vector field ut(x1|x0) = x1 - x0
+
+    #    References
+    #    ----------
+    #    [1] Improving and Generalizing Flow-Based Generative Models with minibatch optimal transport, Preprint, Tong et al.
+    #    """
+    #    return be1 - be0, cv1 - cv0
+    
     def compute_conditional_vector_field(self, x0, x1):
         """
         Compute the conditional vector field ut(x1|x0) = x1 - x0, see Eq.(15) [1].

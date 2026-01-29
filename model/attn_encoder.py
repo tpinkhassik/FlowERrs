@@ -6,6 +6,7 @@ from utils.attn_utils import sequence_mask
 from utils.data_utils import ELEM_LIST
 from model.flow_matching import zero_center_func
 
+# Chirality should be embedded as well, why not.
 def timestep_embedding(timesteps, dim, max_period=10000):
     """Create sinusoidal timestep embeddings.
 
@@ -345,6 +346,9 @@ class AttnEncoderXL(nn.Module):
         query_diag = self.query_diag_w(a_i)             # b,n,d @ d,d -> b,n,d
         key_diag = self.key_diag_w(a_i)                 # b,n,d @ d,d -> b,n,d
         value_diag = self.value_diag_w(a_i)             # b,n,d @ d,d -> b,n,d
+        query_diag = self.query_diag_w(a_i)             # b,n,d @ d,d -> b,n,d
+        key_diag = self.key_diag_w(a_i)                 # b,n,d @ d,d -> b,n,d
+        value_diag = self.value_diag_w(a_i)             # b,n,d @ d,d -> b,n,d
 
         diag_scores = torch.matmul(query_diag, key_diag.transpose(1, 2)) # b,n,d @ b,d,n -> b,n,n
         diag_scores = diag_scores.masked_fill(matrix_masks, 1e-9)
@@ -353,6 +357,8 @@ class AttnEncoderXL(nn.Module):
         diag = self.final_diag_w(context).view(b, n)       # b,n,d @ d,1 -> b,n,1 -> b,n
         
         # non diagonal prediction
+        query = self.query_w(a_i)                          # b,n,d @ d,d -> b,n,d
+        key = self.key_w(a_i) 
         query = self.query_w(a_i)                          # b,n,d @ d,d -> b,n,d
         key = self.key_w(a_i) 
 
@@ -370,4 +376,5 @@ class AttnEncoderXL(nn.Module):
         out = zero_center_output(out, matrix_masks)
         out = (out + out.transpose(1, 2))
 
+        return out
         return out

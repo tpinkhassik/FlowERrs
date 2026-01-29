@@ -72,6 +72,7 @@ class Args:
     rbf_low = 0
     rbf_high = float(os.environ.get("RBF_HIGH"))
     rbf_gap = float(os.environ.get("RBF_GAP"))
+    be_cross_attn = int(os.environ.get("BE_CROSS_ATTN", 0))
 
     # validation #
     # do_validate = True

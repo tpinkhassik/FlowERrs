@@ -39,6 +39,7 @@ def count_lone_pairs(a):
 ps = Chem.SmilesParserParams()
 ps.removeHs = False
 ps.sanitize = True
+
 def get_BE_matrix(r):
     rmol = Chem.MolFromSmiles(r, ps)
     Chem.Kekulize(rmol)
@@ -57,6 +58,26 @@ def get_BE_matrix(r):
     return f
 
 electron_to_bo = {val:key for key, val in bt_to_electron.items()}
+
+
+def get_chiral_vec(r):
+    mol = Chem.MolFromSmiles(r, ps)
+    Chem.rdmolops.CleanupChirality(mol)
+    max_natoms = len(mol.GetAtoms())
+    chiral_vec = np.zeros(max_natoms)
+    for atom in mol.GetAtoms():
+        try:
+            atom_idx = atom.GetIntProp('molAtomMapNumber') - 1
+            match atom.GetChiralTag():
+                case Chem.rdchem.ChiralType.CHI_UNSPECIFIED:
+                    pass
+                case Chem.rdchem.ChiralType.CHI_TETRAHEDRAL_CW:
+                    chiral_vec[atom_idx] = 1
+                case Chem.rdchem.ChiralType.CHI_TETRAHEDRAL_CCW:
+                    chiral_vec[atom_idx] = -1
+        except Exception as e:
+            pass
+    return chiral_vec
 
 def get_formal_charge(a, electron):
     v=tbl.GetNOuterElecs(a.GetAtomicNum())
@@ -117,6 +138,27 @@ def BEmatrix_to_mol(rmol, matrix, idxfunc=lambda x:x.GetIdx()):
         a.SetFormalCharge(int(fc))
     return new_mol
 
+def chiral_vec_to_mol(rmol, chiral_vec, idxfunc=lambda x:x.GetIdx()):
+    new_mol = Chem.RWMol(rmol)
+    new_mol.UpdatePropertyCache(strict=False)
+    
+    amap = {}
+    for atom in new_mol.GetAtoms():
+        amap[atom.GetIntProp('molAtomMapNumber') - 1] = atom.GetIdx()
+
+    for atom in rmol.GetAtoms():
+        a1 = idxfunc(atom)
+        chiral_tag = chiral_vec[atom.GetIntProp('molAtomMapNumber') - 1]
+        match chiral_tag:
+            case 0:
+                new_mol.GetAtomWithIdx(amap[a1]).SetChiralTag(Chem.rdchem.ChiralType.CHI_UNSPECIFIED)
+            case 1:
+                new_mol.GetAtomWithIdx(amap[a1]).SetChiralTag(Chem.rdchem.ChiralType.CHI_TETRAHEDRAL_CW)
+            case -1:
+                new_mol.GetAtomWithIdx(amap[a1]).SetChiralTag(Chem.rdchem.ChiralType.CHI_TETRAHEDRAL_CCW)
+    return new_mol
+
+# Should this be here or earlier in the file?
 atom2idx_dict = {elem:i for i, elem in enumerate(ELEM_LIST)}
 def smi2vocabid(smi):
     mol = Chem.MolFromSmiles(smi, ps)
@@ -133,12 +175,14 @@ def process_smiles(smiles):
     error = ""
     try:
         _ = get_BE_matrix(src_smi)
+        _ = get_chiral_vec(src_smi)
         _ = get_BE_matrix(tgt_smi)
+        _ = get_chiral_vec(tgt_smi)
         src_vocab_id_list, src_len = smi2vocabid(src_smi)
         tgt_vocab_id_list, tgt_len = smi2vocabid(tgt_smi)
         assert (src_vocab_id_list == tgt_vocab_id_list).all()
     except Exception as e:
-        error = e
+        #error = e 
         src_smi, tgt_smi = '', ''
         src_vocab_id_list, src_len = [], 0
         tgt_vocab_id_list, tgt_len = [], 0
@@ -160,7 +204,9 @@ class ReactionBatch:
                  src_token_ids: torch.Tensor,
                  src_lens: torch.Tensor,
                  src_matrices: torch.Tensor,
+                 src_chiral_vecs: torch.Tensor,
                  tgt_matrices: torch.Tensor,
+                 tgt_chiral_vecs: torch.Tensor,
                  matrix_masks: torch.Tensor,
                  src_smiles_list: list,
                  tgt_smiles_list: list,
@@ -169,7 +215,9 @@ class ReactionBatch:
         self.src_token_ids = src_token_ids
         self.src_lens = src_lens
         self.src_matrices = src_matrices
+        self.src_chiral_vecs = src_chiral_vecs
         self.tgt_matrices = tgt_matrices
+        self.tgt_chiral_vecs = tgt_chiral_vecs
         self.matrix_masks = matrix_masks
         self.src_smiles_list = src_smiles_list
         self.tgt_smiles_list = tgt_smiles_list
@@ -179,7 +227,9 @@ class ReactionBatch:
         self.src_token_ids = self.src_token_ids.to(device)
         self.src_lens = self.src_lens.to(device)
         self.src_matrices = self.src_matrices.to(device)
+        self.src_chiral_vecs = self.src_chiral_vecs.to(device)
         self.tgt_matrices = self.tgt_matrices.to(device)
+        self.tgt_chiral_vecs = self.tgt_chiral_vecs.to(device)
         self.matrix_masks = self.matrix_masks.to(device)
 
     def pin_memory(self):
@@ -187,7 +237,9 @@ class ReactionBatch:
         self.src_token_ids = self.src_token_ids.pin_memory()
         self.src_lens = self.src_lens.pin_memory()
         self.src_matrices = self.src_matrices.pin_memory()
+        self.src_chiral_vecs = self.src_chiral_vecs.pin_memory()
         self.tgt_matrices = self.tgt_matrices.pin_memory()
+        self.tgt_chiral_vecs = self.tgt_chiral_vecs.pin_memory()
         self.matrix_masks = self.matrix_masks.pin_memory()
 
         return self
@@ -242,8 +294,11 @@ class ReactionDataset(Dataset):
             src_smi, tgt_smi = smiles.strip().split('|')[0].split('>>')
 
             try:
+                # TODO: Matrices and chiral vec set variables should probably be replaced with _ here.
                 src_matrix = get_BE_matrix(src_smi)
+                src_chiral_vec = get_chiral_vec(src_smi)
                 tgt_matrix = get_BE_matrix(tgt_smi)    
+                tgt_chiral_vec = get_chiral_vec(tgt_smi)
                 src_vocab_id_list, src_len = smi2vocabid(src_smi)
                 tgt_vocab_id_list, tgt_len = smi2vocabid(tgt_smi)
                 assert (src_vocab_id_list == tgt_vocab_id_list).all()
@@ -353,7 +408,11 @@ class ReactionDataset(Dataset):
         src_token_id_batch = []
         src_len_batch = []
         src_matrix_batch = []
+        src_chiral_vec_batch = []
         tgt_matrix_batch = []
+        tgt_chiral_vec_batch = []
+
+        # Don't need special chiral handling for smiles, I think, at least.
         src_smiles_batch = []
         tgt_smiles_batch = []
         for data_index in data_indices:
@@ -367,36 +426,46 @@ class ReactionDataset(Dataset):
             src_token_id_batch.append(src_token_id)
 
             src_matrix = get_BE_matrix(self.src_smis[data_index])
+            src_chiral_vec = get_chiral_vec(self.src_smis[data_index])
             src_matrix = np.pad(src_matrix, ((0, max_len - src_len), (0, max_len - src_len)), 
+                       mode='constant', constant_values=MATRIX_PAD)
+            src_chiral_vec = np.pad(src_chiral_vec, (0, max_len - src_len), 
                        mode='constant', constant_values=MATRIX_PAD)
             src_len_batch.append(src_len)
             src_matrix_batch.append(src_matrix)
+            src_chiral_vec_batch.append(src_chiral_vec)
             src_smiles_batch.append(self.src_smis[data_index])
 
             if not self.reactant_only:
                 tgt_matrix = get_BE_matrix(self.tgt_smis[data_index])
+                tgt_chiral_vec = get_chiral_vec(self.tgt_smis[data_index])
                 tgt_matrix = np.pad(tgt_matrix, ((0, max_len - src_len), (0, max_len - src_len)), 
                         mode='constant', constant_values=MATRIX_PAD)
                 tgt_matrix_batch.append(tgt_matrix)
+                tgt_chiral_vec_batch.append(tgt_chiral_vec)
                 tgt_smiles_batch.append(self.tgt_smis[data_index])
             
         src_data_indices = torch.as_tensor(data_indices, dtype=torch.long)
         src_len_batch = torch.as_tensor(src_len_batch, dtype=torch.long)
         src_token_id_batch = torch.stack(src_token_id_batch)
         src_matrix_batch = torch.as_tensor(np.stack(src_matrix_batch), dtype=torch.float)
+        src_chiral_vec_batch = torch.as_tensor(np.stack(src_chiral_vec_batch), dtype=torch.float)
         if not self.reactant_only: 
             tgt_matrix_batch = torch.as_tensor(np.stack(tgt_matrix_batch), dtype=torch.float)
+            tgt_chiral_vec_batch = torch.as_tensor(np.stack(tgt_chiral_vec_batch), dtype=torch.float)
         else: tgt_matrix_batch = src_matrix_batch
         
         node_mask = (src_matrix_batch[:, :, 0] != MATRIX_PAD)
         matrix_masks = (node_mask.unsqueeze(1) * node_mask.unsqueeze(2)).long()
-
+            
         reaction_batch = ReactionBatch(
             src_data_indices=src_data_indices,
             src_token_ids=src_token_id_batch,
             src_lens=src_len_batch,
             src_matrices=src_matrix_batch,
+            src_chiral_vecs=src_chiral_vec_batch,
             tgt_matrices=tgt_matrix_batch,
+            tgt_chiral_vecs=tgt_chiral_vec_batch,
             matrix_masks=matrix_masks,
             src_smiles_list=src_smiles_batch,
             tgt_smiles_list=tgt_smiles_batch
