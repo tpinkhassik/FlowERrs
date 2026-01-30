@@ -180,22 +180,31 @@ def main(args):
             y_len = train_batch.src_lens
             x0 = train_batch.src_matrices
             x1 = train_batch.tgt_matrices
+
+            cv0 = train_batch.src_chiral_vec
+            cv1 = train_batch.tgt_chiral_vec
+
+
             matrix_masks = train_batch.matrix_masks
             
 
             x0_sample = flow.sample_be_matrix(x0)
+            cv0_sample = flow.sample_chiral_vec(x0)
 
             t = torch.rand(x0.shape[0]).type_as(x0)
             
-            xt = flow.sample_conditional_pt(x0, x1, t)
+
+            xt, cvt = flow.sample_conditional_pt(x0, x1, cv0, cv1, t)
             ut = flow.compute_conditional_vector_field(x0_sample, x1)
+            u_cvt = flow.compute_conditional_vector_field(cv0_sample, cv1)
 
             if hasattr(model, "module"):
                 model = model.module        # unwrap DDP attn_model to enable accessing attn_model func directly
-            y_emb = model.id2emb(y)
-            vt = model(y_emb, y_len, xt, t)
 
-            loss = (vt - ut) * matrix_masks
+            y_emb = model.id2emb(y)
+            vt, v_cvt = model(y_emb, y_len, xt, t, cvt)
+
+            loss = (vt - ut) * matrix_masks 
             loss = torch.sum((loss) ** 2) / loss.shape[0]
             (loss / args.accumulation_count).backward()
             losses.append(loss.item())

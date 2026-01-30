@@ -283,6 +283,10 @@ class AttnEncoderXL(nn.Module):
             *[Block(self.d_model) for _ in range(self.post_processing_layers)]
         )
         self.final_diag_w = torch.nn.Linear(self.d_model, 1)
+        self.chiral_head = torch.nn.Sequential(
+            *[Block(self.d_model) for _ in range(self.post_processing_layers)],
+            torch.nn.Linear(self.d_model, 1)
+        )
 
         self.rel_emb_w = torch.nn.Sequential(
             *[*[Block(self.d_model) for _ in range(self.post_processing_layers)], 
@@ -349,6 +353,7 @@ class AttnEncoderXL(nn.Module):
         a_i = self.layer_norm(a_i)                        # b,n,d
         
         # a_i - atom embeddings after multiheaded attention on atom embeddings + rbf expansion
+        v_cv = self.chiral_head(a_i).squeeze(-1)            # b,n
 
         # diagonal prediction
         query_diag = self.query_diag_w(a_i)             # b,n,d @ d,d -> b,n,d
@@ -384,5 +389,4 @@ class AttnEncoderXL(nn.Module):
         out = zero_center_output(out, matrix_masks)
         out = (out + out.transpose(1, 2))
 
-        return out
-        return out
+        return out, v_cv

@@ -43,7 +43,7 @@ class ConditionalFlowMatcher(nn.Module):
         masks = (node_mask.unsqueeze(1) * node_mask.unsqueeze(2)).long()
 
         noise = self.zero_centered_noise(masks.shape, masks) # (n, n, b, d)
-        noise = 0.5 * (noise + noise.transpose(1, 2))
+        noise = 0.5 * (noise + noise.transpose(1, 2)) #Symmetrize
         matrix = matrix + noise * self.sigma
         
         return matrix
@@ -84,34 +84,18 @@ class ConditionalFlowMatcher(nn.Module):
         tbe = t.reshape(-1, *([1] * (be0.dim() - 1)))
         bemu_t = tbe * be1 + (1 - tbe) * be0
 
+        tcv = t.reshape(-1, *([1] * (cv0.dim() - 1)))
+        cvmu_t = tcv * cv1 + (1 - tcv) * cv0
+
         
 
-        return self.sample_be_matrix(bemu_t)
+        return self.sample_be_matrix(bemu_t), self.sample_chiral_vec(cvmu_t)
 
         #tcv = t.reshape(-1, *([1] * (cv0.dim() - 1)))
         #cvmu_t = tcv * cv1 + (1 - tcv) * cv0
         #return self.sample_be_matrix(bemu_t), self.sample_chiral_vec(cvmu_t)
 
-    #def compute_conditional_vector_field(self, be0, be1, cv0, cv1):
-    #    """
-    #    Compute the conditional vector field ut(x1|x0) = x1 - x0, see Eq.(15) [1].
 
-    #    Parameters
-    #    ----------
-    #    x0 : Tensor, shape (bs, *dim)
-    #        represents the source minibatch
-    #    x1 : Tensor, shape (bs, *dim)
-    #        represents the target minibatch
-
-    #    Returns
-    #    -------
-    #    ut : conditional vector field ut(x1|x0) = x1 - x0
-
-    #    References
-    #    ----------
-    #    [1] Improving and Generalizing Flow-Based Generative Models with minibatch optimal transport, Preprint, Tong et al.
-    #    """
-    #    return be1 - be0, cv1 - cv0
     
     def compute_conditional_vector_field(self, x0, x1):
         """

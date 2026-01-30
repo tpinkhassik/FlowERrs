@@ -208,6 +208,7 @@ class ReactionBatch:
                  tgt_matrices: torch.Tensor,
                  tgt_chiral_vecs: torch.Tensor,
                  matrix_masks: torch.Tensor,
+                 node_masks: torch.Tensor,
                  src_smiles_list: list,
                  tgt_smiles_list: list,
                  ):
@@ -219,6 +220,7 @@ class ReactionBatch:
         self.tgt_matrices = tgt_matrices
         self.tgt_chiral_vecs = tgt_chiral_vecs
         self.matrix_masks = matrix_masks
+        self.node_masks = node_masks
         self.src_smiles_list = src_smiles_list
         self.tgt_smiles_list = tgt_smiles_list
 
@@ -231,6 +233,7 @@ class ReactionBatch:
         self.tgt_matrices = self.tgt_matrices.to(device)
         self.tgt_chiral_vecs = self.tgt_chiral_vecs.to(device)
         self.matrix_masks = self.matrix_masks.to(device)
+        self.node_masks = self.node_masks.to(device)
 
     def pin_memory(self):
         self.src_data_indices = self.src_data_indices.pin_memory()
@@ -241,6 +244,7 @@ class ReactionBatch:
         self.tgt_matrices = self.tgt_matrices.pin_memory()
         self.tgt_chiral_vecs = self.tgt_chiral_vecs.pin_memory()
         self.matrix_masks = self.matrix_masks.pin_memory()
+        self.node_masks = self.node_masks.pin_memory()
 
         return self
 
@@ -294,11 +298,10 @@ class ReactionDataset(Dataset):
             src_smi, tgt_smi = smiles.strip().split('|')[0].split('>>')
 
             try:
-                # TODO: Matrices and chiral vec set variables should probably be replaced with _ here.
-                src_matrix = get_BE_matrix(src_smi)
-                src_chiral_vec = get_chiral_vec(src_smi)
-                tgt_matrix = get_BE_matrix(tgt_smi)    
-                tgt_chiral_vec = get_chiral_vec(tgt_smi)
+                _ = get_BE_matrix(src_smi)
+                _ = get_chiral_vec(src_smi)
+                _ = get_BE_matrix(tgt_smi)    
+                _ = get_chiral_vec(tgt_smi)
                 src_vocab_id_list, src_len = smi2vocabid(src_smi)
                 tgt_vocab_id_list, tgt_len = smi2vocabid(tgt_smi)
                 assert (src_vocab_id_list == tgt_vocab_id_list).all()
@@ -457,7 +460,7 @@ class ReactionDataset(Dataset):
         
         node_mask = (src_matrix_batch[:, :, 0] != MATRIX_PAD)
         matrix_masks = (node_mask.unsqueeze(1) * node_mask.unsqueeze(2)).long()
-            
+
         reaction_batch = ReactionBatch(
             src_data_indices=src_data_indices,
             src_token_ids=src_token_id_batch,
@@ -467,6 +470,7 @@ class ReactionDataset(Dataset):
             tgt_matrices=tgt_matrix_batch,
             tgt_chiral_vecs=tgt_chiral_vec_batch,
             matrix_masks=matrix_masks,
+            node_masks=node_mask,
             src_smiles_list=src_smiles_batch,
             tgt_smiles_list=tgt_smiles_batch
         )
