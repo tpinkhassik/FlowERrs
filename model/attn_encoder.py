@@ -283,10 +283,6 @@ class AttnEncoderXL(nn.Module):
             *[Block(self.d_model) for _ in range(self.post_processing_layers)]
         )
         self.final_diag_w = torch.nn.Linear(self.d_model, 1)
-        self.chiral_head = torch.nn.Sequential(
-            *[Block(self.d_model) for _ in range(self.post_processing_layers)],
-            torch.nn.Linear(self.d_model, 1)
-        )
 
         self.rel_emb_w = torch.nn.Sequential(
             *[*[Block(self.d_model) for _ in range(self.post_processing_layers)], 
@@ -300,6 +296,13 @@ class AttnEncoderXL(nn.Module):
             rbf_layers.append(Block(self.rbf.dim))
         self.rbf_linear = torch.nn.Sequential(*rbf_layers)
         self.rbf_final_linear = torch.nn.Linear(self.rbf.dim, 1)
+
+        # Should be simple.  I don't think rbf layers are warranted yet, will add if needed.
+        # Decode chirality from the same embedded features a_i.
+        self.chiral_head = torch.nn.Sequential(
+            *[Block(self.d_model) for _ in range(self.post_processing_layers)],
+            torch.nn.Linear(self.d_model, 1)
+        )
 
     def id2emb(self, src_token_id):
         return self.atom_embedding(src_token_id)
@@ -336,6 +339,9 @@ class AttnEncoderXL(nn.Module):
         # a_i - raw atom embeddings
         a_i = src * math.sqrt(self.d_model)
         a_i = self.dropout(a_i)
+
+        # Maybe chiral_vec should be defined as zero if there is no chiral information?
+        # TODO: Implement a more robust way to ingest/predict multimodal atom features. 
         if chiral_vec is not None:
             if chiral_vec.dim() == 3 and chiral_vec.size(-1) == 1:
                 chiral_vec = chiral_vec.squeeze(-1)
@@ -353,7 +359,7 @@ class AttnEncoderXL(nn.Module):
         a_i = self.layer_norm(a_i)                        # b,n,d
         
         # a_i - atom embeddings after multiheaded attention on atom embeddings + rbf expansion
-        v_cv = self.chiral_head(a_i).squeeze(-1)            # b,n
+        v_cv = self.chiral_head(a_i).squeeze(-1)          # b,n
 
         # diagonal prediction
         query_diag = self.query_diag_w(a_i)             # b,n,d @ d,d -> b,n,d
@@ -374,6 +380,11 @@ class AttnEncoderXL(nn.Module):
         key = self.key_w(a_i) 
         query = self.query_w(a_i)                          # b,n,d @ d,d -> b,n,d
         key = self.key_w(a_i) 
+        
+
+        # I can predict a delta CV as well
+        # And if this works for chirality it is extensible to other atom properties, even continuous ones
+        # Like partial charges
 
         scores = torch.matmul(query, key.transpose(1, 2))  # b,n,d @ b,d,n -> b,n,n
         a_ij = scores / math.sqrt(self.d_model)

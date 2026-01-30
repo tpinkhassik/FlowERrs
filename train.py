@@ -132,6 +132,8 @@ def _optimize(args, model, optimizer, scheduler):
     model.zero_grad(set_to_none=True)
     return g_norm
 
+
+#TODO: add separate tracking for chiral losses
 def main(args):
     args.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     device = args.device
@@ -181,15 +183,16 @@ def main(args):
             x0 = train_batch.src_matrices
             x1 = train_batch.tgt_matrices
 
-            cv0 = train_batch.src_chiral_vec
-            cv1 = train_batch.tgt_chiral_vec
+            cv0 = train_batch.src_chiral_vecs
+            cv1 = train_batch.tgt_chiral_vecs
 
 
             matrix_masks = train_batch.matrix_masks
+            node_masks = train_batch.node_masks
             
 
             x0_sample = flow.sample_be_matrix(x0)
-            cv0_sample = flow.sample_chiral_vec(x0)
+            cv0_sample = flow.sample_chiral_vec(cv0)
 
             t = torch.rand(x0.shape[0]).type_as(x0)
             
@@ -204,10 +207,15 @@ def main(args):
             y_emb = model.id2emb(y)
             vt, v_cvt = model(y_emb, y_len, xt, t, cvt)
 
-            loss = (vt - ut) * matrix_masks 
-            loss = torch.sum((loss) ** 2) / loss.shape[0]
+            be_loss = (vt - ut) * matrix_masks 
+            be_loss = torch.sum((be_loss) ** 2) / be_loss.shape[0]
+            cv_loss = (v_cvt - u_cvt) * node_masks
+            cv_loss = torch.sum((cv_loss) ** 2) / cv_loss.shape[0]
+
+            loss = be_loss + cv_loss_weight * cv_loss
+
             (loss / args.accumulation_count).backward()
-            losses.append(loss.item())
+            losses.append(be_loss.item())
 
             accum += 1
             if accum == args.accumulation_count:
