@@ -6,7 +6,7 @@ from utils.attn_utils import sequence_mask
 from utils.data_utils import ELEM_LIST
 from model.flow_matching import zero_center_func
 
-# Chirality should be embedded as well, why not.
+
 def timestep_embedding(timesteps, dim, max_period=10000):
     """Create sinusoidal timestep embeddings.
 
@@ -236,6 +236,7 @@ class AttnEncoderXL(nn.Module):
         self.attention_dropout = args.attn_dropout
 
         self.atom_embedding = nn.Embedding(len(ELEM_LIST) , self.d_model, padding_idx=0)
+        self.chiral_proj = nn.Linear(1, self.d_model)
         self.rbf = RBFExpansion(args)
 
         self.time_dim = self.d_model - self.rbf.dim
@@ -299,7 +300,7 @@ class AttnEncoderXL(nn.Module):
     def id2emb(self, src_token_id):
         return self.atom_embedding(src_token_id)
         
-    def forward(self, src, lengths, bond_matrix, timestep):
+    def forward(self, src, lengths, bond_matrix, timestep, chiral_vec=None):
         """adapt from onmt TransformerEncoder
             src_token_id: (b, t, h)
             lengths: (b,)
@@ -315,6 +316,7 @@ class AttnEncoderXL(nn.Module):
         timestep = timestep.repeat(1, n, n, 1) # unsqueeze to match bond n x n
 
         mask = ~sequence_mask(lengths).unsqueeze(1)
+        node_mask = ~mask.squeeze(1)
         
         matrix_masks = ~(~mask * ~mask.transpose(1, 2)).bool()
         rbf_bond_matrix = self.rbf(bond_matrix, matrix_masks)
@@ -330,6 +332,12 @@ class AttnEncoderXL(nn.Module):
         # a_i - raw atom embeddings
         a_i = src * math.sqrt(self.d_model)
         a_i = self.dropout(a_i)
+        if chiral_vec is not None:
+            if chiral_vec.dim() == 3 and chiral_vec.size(-1) == 1:
+                chiral_vec = chiral_vec.squeeze(-1)
+            chiral_feat = self.chiral_proj(chiral_vec.unsqueeze(-1))
+            chiral_feat = chiral_feat * node_mask.unsqueeze(-1).type_as(chiral_feat)
+            a_i = a_i + chiral_feat
 
         if self.args.shared_attention_layer == 1:
             layer = self.attention_layer
