@@ -207,15 +207,17 @@ def main(args):
             y_emb = model.id2emb(y)
             vt, v_cvt = model(y_emb, y_len, xt, t, cvt)
 
+            #TODO: Implement FAMO or the like to do multiobjective learning.
+
             be_loss = (vt - ut) * matrix_masks 
             be_loss = torch.sum((be_loss) ** 2) / be_loss.shape[0]
             cv_loss = (v_cvt - u_cvt) * node_masks
             cv_loss = torch.sum((cv_loss) ** 2) / cv_loss.shape[0]
 
-            loss = be_loss + cv_loss_weight * cv_loss
+            loss = be_loss + cv_loss
 
             (loss / args.accumulation_count).backward()
-            losses.append(be_loss.item())
+            losses.append(loss.item())
 
             accum += 1
             if accum == args.accumulation_count:

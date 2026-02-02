@@ -74,8 +74,11 @@ def predict_batch(args, batch_idx, data_batch, model, flow, split, rand_matrix=N
     y = data_batch.src_token_ids
     y_len = data_batch.src_lens
     x0 = data_batch.src_matrices
+    cv0 = data_batch.src_chiral_vecs
     # x1 = data_batch.tgt_matrices
+    # cv1 = data_batch.tgt_chiral_vecs
     matrix_masks = data_batch.matrix_masks
+    node_masks = data_batch.node_masks
 
     batch_size, n, n = x0.shape
     
@@ -90,37 +93,58 @@ def predict_batch(args, batch_idx, data_batch, model, flow, split, rand_matrix=N
     for sample_size in split_sample_batches:
         src_data_indices = src_data_indices.repeat_interleave(sample_size, dim=0)
         x0_repeated = x0.repeat_interleave(sample_size, dim=0)
+        cv0_repeated = cv0.repeat_interleave(sample_size, dim=0)
+
         x0_sample_repeated = flow.sample_be_matrix(x0_repeated)
+        cv0_sample_repeated = flow.sample_chiral_vec(cv0_repeated)
+
 
         matrix_masks_repeated = matrix_masks.repeat_interleave(sample_size, dim=0)
+        node_masks_repeated = node_masks.repeat_interleave(sample_size, dim=0)
+
         x0_sample_repeated = x0_sample_repeated.masked_fill(~(matrix_masks_repeated.bool()), 0) # ode initial step has RMS norm thus padding nan has to be swap to 0
-        
+        cv0_sample_repeated = cv0_sample_repeated.masked_fill(~(node_masks_repeated.bool()), 0)
+
         del matrix_masks_repeated
+        del node_masks_repeated
+
         torch.cuda.empty_cache()
 
         y_repeated = y.repeat_interleave(sample_size, dim=0)
         y_emb_repeated = model.id2emb(y_repeated)
         y_len_batch_repeated = y_len.repeat_interleave(sample_size, dim=0)
         
-        traj_list = torchdiffeq.odeint_adjoint(
-            lambda t, x: model.forward(y_emb_repeated, y_len_batch_repeated, x, t),
-            x0_sample_repeated,
+        def velocity(t, state):
+            x, cv = state
+            v_be, v_cv = model.forward(y_emb_repeated, y_len_batch_repeated, x, t, cv)
+            return (v_be, v_cv)
+
+        traj_be, traj_cv = torchdiffeq.odeint_adjoint(
+            velocity,
+            (x0_sample_repeated, cv0_sample_repeated),
             torch.linspace(0, 1, 2).to(args.device),
             atol=1e-4,
             rtol=1e-4,
             method="dopri5",
             adjoint_params=()
         )
-        big_traj_list.append((traj_list.transpose(0, 1).detach().cpu(), sample_size))
+        big_traj_list.append((
+            traj_be.transpose(0, 1).detach().cpu(),
+            traj_cv.transpose(0, 1).detach().cpu(),
+            sample_size,
+            ))
 
     # merging
-    all_traj_list = []
+    all_traj_be = []
+    all_traj_cv = []
     for bs in range(batch_size):
-        for traj_list, sample_size in big_traj_list:
-            all_traj_list.append(traj_list[bs*sample_size:(bs+1)*sample_size].transpose(0, 1))
-    traj_list = torch.concat(all_traj_list, dim=1) # concat on sampling dimension
+        for traj_be, traj_cv, sample_size in big_traj_list:
+            all_traj_be.append(traj_be[bs*sample_size:(bs+1)*sample_size].transpose(0, 1))
+            all_traj_cv.append(traj_cv[bs*sample_size:(bs+1)*sample_size].transpose(0, 1))
+    traj_be = torch.concat(all_traj_be, dim=1) # concat on sampling dimension
+    traj_cv = torch.concat(all_traj_cv, dim=1)
     # ------------------------------------#
-    return traj_list
+    return traj_be, traj_cv
 
 def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=None):
     accuracy = []
@@ -144,9 +168,9 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
 
             # if (batch_size*n*n) <= 5*360*360:
             if (batch_size*n*n) <= 15*130*130:
-                traj_list = predict_batch(args, batch_idx, data_batch, model, flow, 1)
+                traj_be, traj_cv = predict_batch(args, batch_idx, data_batch, model, flow, 1)
             else:
-                traj_list = predict_batch(args, batch_idx, data_batch, model, flow, 2)
+                traj_be, traj_cv = predict_batch(args, batch_idx, data_batch, model, flow, 2)
 
             if torch.distributed.is_initialized() and dist.get_world_size() > 1:
                 gathered_results = [None for _ in range(dist.get_world_size())]
@@ -166,7 +190,10 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
                 batch_size, n, n = x0.shape
 
                 last_step = traj_list[-1]
+
+
                 product_BE_matrices = custom_round(last_step)
+
                 product_BE_matrices_batch = torch.split(product_BE_matrices, args.sample_size)
 
                 for idx in range(batch_size):
