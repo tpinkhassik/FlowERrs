@@ -60,6 +60,8 @@ def get_BE_matrix(r):
 electron_to_bo = {val:key for key, val in bt_to_electron.items()}
 
 
+#TODO: Think about using CIPLabeler::assignCIPLabels() or rdmolops.AssignStereochemistry (I think that is what it does)
+# TODO: Think about preprocessing the data with this.  Assign stereo, then pass in cleaned smiles and chiral vectors.
 def get_chiral_vec(r):
     mol = Chem.MolFromSmiles(r, ps)
     Chem.rdmolops.CleanupChirality(mol)
@@ -397,6 +399,7 @@ class ReactionDataset(Dataset):
     def __len__(self):
         return len(self.batch_sizes)
 
+    # TODO: Fix this.  Current __getitem__ recomputes BE matrix, etc. from scratch for each batch.  Better to cache?
     def __getitem__(self, idx : int):
         batch_index = idx
         

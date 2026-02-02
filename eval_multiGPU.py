@@ -6,7 +6,7 @@ import torch
 import numpy as np
 from rdkit import Chem
 import torchdiffeq
-from utils.data_utils import ReactionDataset, BEmatrix_to_mol, ps
+from utils.data_utils import ReactionDataset, BEmatrix_to_mol, chiral_vec_to_mol, ps
 from utils.rounding import saferound_tensor
 import torch.distributed as dist
 from train import init_model, init_loader
@@ -58,6 +58,18 @@ def custom_round(x):
         try: output.append(redistribute_round(x[i]))
         except: output.append(torch.round(x[i]))
     return torch.stack(output)
+
+def chiral_round(x: torch.Tensor) -> torch.Tensor:
+    """
+    Round a chiral vector, bounded to be within -1 and +1.
+    Args: x (torch.Tensor): input chiral vector output
+    Returns: torch.Tensor: rounded tensor with elements in {-1, 0, +1}
+    """
+    return torch.clamp(torch.round(x), min=-1, max=1)
+
+
+
+
 
 def standardize_smiles(mol):
     [a.SetAtomMapNum(0) for a in mol.GetAtoms()]
@@ -160,10 +172,12 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
 
             src_data_indices = data_batch.src_data_indices
             x0 = data_batch.src_matrices
+            cv0 = data_batch.src_chiral_vecs
             y_len = data_batch.src_lens
             batch_size, n, n = x0.shape
             src_smiles_list = data_batch.src_smiles_list
             tgt_smiles_list = data_batch.tgt_smiles_list
+            tgt_chiral_vec_list = data_batch.tgt_chiral_vecs
 
 
             # if (batch_size*n*n) <= 5*360*360:
@@ -175,30 +189,52 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
             if torch.distributed.is_initialized() and dist.get_world_size() > 1:
                 gathered_results = [None for _ in range(dist.get_world_size())]
                 dist.gather_object(
-                    (src_data_indices, traj_list, x0, y_len, src_smiles_list, tgt_smiles_list),
+                    (src_data_indices,
+                     traj_be, traj_cv,
+                     x0,
+                     cv0, 
+                     y_len, 
+                     src_smiles_list, 
+                     tgt_smiles_list,
+                     tgt_chiral_vec_list,
+                     ),
                     gathered_results if dist.get_rank() == 0 else None,
                     dst=0
                 )
             else:
-                gathered_results = [(src_data_indices, traj_list, x0, y_len, src_smiles_list, tgt_smiles_list)]
+                gathered_results = [
+                    (src_data_indices,
+                     traj_be, 
+                     traj_cv, 
+                     x0, 
+                     cv0, 
+                     y_len, 
+                     src_smiles_list, 
+                     tgt_smiles_list,
+                     tgt_chiral_vec_list,
+                     )
+                    ]
 
             if dist.get_rank() > 0:
                 continue
 
             for result in gathered_results:
-                src_data_indices, traj_list, x0, y_len, src_smiles_list, tgt_smiles_list = result
+                src_data_indices, traj_be, traj_cv, x0, cv0, y_len, src_smiles_list, tgt_smiles_list, tgt_chiral_vec_list = result
                 batch_size, n, n = x0.shape
 
-                last_step = traj_list[-1]
+                last_be_step = traj_be[-1]
+                last_cv_step = traj_cv[-1]
 
 
-                product_BE_matrices = custom_round(last_step)
+                product_BE_matrices = custom_round(last_be_step)
+                product_chiral_vecs = chiral_round(last_cv_step)
 
                 product_BE_matrices_batch = torch.split(product_BE_matrices, args.sample_size)
+                product_chiral_vecs_batch = torch.split(product_chiral_vecs, args.sample_size)
 
                 for idx in range(batch_size):
-                    reac_smi, product_smi, product_BE_matrices = \
-                        src_smiles_list[idx], tgt_smiles_list[idx], product_BE_matrices_batch[idx]
+                    reac_smi, product_smi, tgt_chiral_vecs, product_BE_matrices, product_chiral_vecs = \
+                        src_smiles_list[idx], tgt_smiles_list[idx], tgt_chiral_vec_list[idx], product_BE_matrices_batch[idx], product_chiral_vecs_batch[idx]
                     
                     data_idx = int(src_data_indices[idx].detach().cpu())
                     if data_idx in inferenced_indexes: continue
@@ -212,13 +248,27 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
                     matrices, counts = torch.unique(product_BE_matrices, dim=0, return_counts=True)
                     matrices, counts = matrices.cpu().numpy(), counts.cpu().numpy()
 
+                    chiral_vecs, cv_counts = torch.unique(product_chiral_vecs, dim=0, return_counts=True)
+                    chiral_vecs, cv_counts = chiral_vecs.cpu().numpy(), cv_counts.cpu().numpy()
+
                     not_sym = 0
 
                     correct = wrong_smi_conserved = wrong_smi_non_conserved = 0
                     no_smi_conserved = no_smi_non_conserved = 0
 
+                    correct_cv = 0
+                    correct_centers = false_positives = false_negatives = 0
+
+
+
                     pred_smi_dict = defaultdict(int)
                     pred_conserved_dict = defaultdict(bool)
+
+                    pred_cv_dict = defaultdict(int)
+                
+                    # TODO: Evaluate on unique BE matrix/chiral vec pair?  What does it really mean for the 'product'
+                    # to have correct chirality but wrong bonding?  That would not make much sense to me
+
                     # Evaluation on unique predicted BE matrices
                     for i in range(matrices.shape[0]):
                         pred_prod_be_matrix, count = matrices[i], counts[i] # predicted product matrix and it's count
@@ -260,7 +310,44 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
                             else:
                                 no_smi_non_conserved += count
                     
-                    metric = [correct, wrong_smi_conserved, wrong_smi_non_conserved, no_smi_conserved, no_smi_non_conserved]
+                    # New: check on the chiral vectors
+                    for i in range(chiral_vecs.shape[0]):
+                        pred_prod_chiral_vec, count = chiral_vecs[i], cv_counts[i]
+                        num_nodes = y_len[idx]
+                        pred_prod_chiral_vec = pred_prod_chiral_vec[:num_nodes]
+                        reac_chiral_vec = cv0[idx][:num_nodes].detach().cpu().numpy()
+                        tgt_chiral_vec = tgt_chiral_vecs[:num_nodes].cpu().numpy()
+                        assert pred_prod_chiral_vec.shape == reac_chiral_vec.shape, "pred and react cv not the same shape"
+
+                        correct_centers += count *(pred_prod_chiral_vec == tgt_chiral_vec).sum()
+
+                        if np.array_equal(pred_prod_chiral_vec, tgt_chiral_vec):
+                            correct_cv += count
+                            pred_cv_dict[tuple(node for node in pred_prod_chiral_vec.tolist())] += count
+                        else:
+                            # Count how many centers were set when they shouldn't have been
+                            false_positives += count * (pred_prod_chiral_vec[tgt_chiral_vec == 0] != 0).sum()
+
+                            # Count how many centers were missed
+                            false_negatives += count * (pred_prod_chiral_vec[tgt_chiral_vec != 0] == 0).sum()
+
+                    
+
+                    metric = [
+                        correct, 
+                        wrong_smi_conserved, 
+                        wrong_smi_non_conserved, 
+                        no_smi_conserved, 
+                        no_smi_non_conserved,
+                        correct_cv,
+                        correct_centers,
+                        false_positives,
+                        false_negatives]
+                    
+                    # Not changing this right now because it is nontrivial to put the chiral vectors back into SMILES.
+                    # Will need to rewrite the loop so that the molecules are reunited with their chiralities before we
+                    # generate SMILES from the BE matrices.
+
                     predictions = [(smi, pred_smi_dict[smi], pred_conserved_dict[smi]) for smi in pred_smi_dict]
                     if write_o is not None: 
                         write_o.write(f"{metric}|{not_sym}|{predictions}\n")
