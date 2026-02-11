@@ -359,6 +359,8 @@ class AttnEncoderXL(nn.Module):
         a_i = self.layer_norm(a_i)                        # b,n,d
         
         # a_i - atom embeddings after multiheaded attention on atom embeddings + rbf expansion
+
+        # draw out diagram of model (model figure)
         v_cv = self.chiral_head(a_i).squeeze(-1)          # b,n
 
         # diagonal prediction
