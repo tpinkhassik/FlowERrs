@@ -25,13 +25,13 @@ export MASTER_PORT=1235
 
 export TRAIN_FILE=${TRAIN_FILE:-/home/ptim/orcd/scratch/data/uspto-stereo_out_expH.txt}
 export VAL_FILE=${VAL_FILE:-/home/ptim/orcd/scratch/data/uspto-stereo_out_expH_val.txt}
-# export TEST_FILE=${TEST_FILE:-$PWD/data/$DATA_NAME/test.txt}
-#export TEST_FILE=${TEST_FILE:-$PWD/data/$DATA_NAME/beam.txt}
+# export TEST_FILE=${TEST_FILE:-/home/ptim/FlowER/FlowERrs/data/$DATA_NAME/test.txt}
+# export TEST_FILE=${TEST_FILE:-/home/ptim/FlowER/FlowERrs/data/$DATA_NAME/beam.txt}
 
 
 # export MODEL_PATH=$PWD/checkpoints/$DATA_NAME/$EXP_NAME/
 export MODEL_PATH=/home/ptim/orcd/scratch/FlowERrs_checkpoints/$DATA_NAME/$EXP_NAME/
-export RESULT_PATH=$PWD/results/$DATA_NAME/$EXP_NAME/
+export RESULT_PATH=/home/ptim/orcd/scratch/FlowERrs_results/$DATA_NAME/$EXP_NAME/
 
  [ -f $TRAIN_FILE ] || { echo $TRAIN_FILE does not exist; exit; }
  [ -f $VAL_FILE ] || { echo $VAL_FILE does not exist; exit; }
@@ -39,7 +39,7 @@ export RESULT_PATH=$PWD/results/$DATA_NAME/$EXP_NAME/
 
 
 export SCALE=4 # smaller sample size during training validation
- sh scripts/train.sh
+sh /home/ptim/FlowER/FlowERrs/scripts/train.sh
 
 export SCALE=1 # larger sample size during testing
 # sh scripts/eval_multiGPU.sh

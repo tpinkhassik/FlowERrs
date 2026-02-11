@@ -18,7 +18,8 @@ set -euo pipefail
 # Usage:
 #   sbatch --export=ALL,CONDA_ENV=flower scripts/submit_engaging_newData.sh
 
-cd "$(dirname "$0")/.."
+REPO_DIR="/home/ptim/FlowER/FlowERrs"
+cd "$REPO_DIR"
 mkdir -p /home/ptim/orcd/scratch/logs
 
 if [[ -f /etc/profile ]]; then
@@ -35,4 +36,5 @@ if [[ -n "${CONDA_ENV:-}" ]]; then
   source activate "${CONDA_ENV}"
 fi
 
-sh run_FlowER_large_newData.sh
+[ -f "$REPO_DIR/run_FlowER_large_newData.sh" ] || { echo "$REPO_DIR/run_FlowER_large_newData.sh not found"; exit 1; }
+sh "$REPO_DIR/run_FlowER_large_newData.sh"
