@@ -49,12 +49,14 @@ def setup_logger(args, phase, warning_off: bool = False):
     else:
         RDLogger.DisableLog("rdApp.warning")
 
-    os.makedirs(f"./logs/{args.data_name}/{args.exp_name}", exist_ok=True)
+    log_root = "/home/ptim/orcd/scratch/logs"
+    log_dir = os.path.join(log_root, args.data_name, args.exp_name)
+    os.makedirs(log_dir, exist_ok=True)
     dt = datetime.strftime(datetime.now(), "%y%m%d-%H%Mh")
 
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
-    fh = logging.FileHandler(f"./logs/{args.data_name}/{args.exp_name}/{phase}_{args.log_file}.{dt}")
+    fh = logging.FileHandler(os.path.join(log_dir, f"{phase}_{args.log_file}.{dt}"))
     sh = logging.StreamHandler(sys.stdout)
     fh.setLevel(logging.INFO)
     sh.setLevel(logging.INFO)

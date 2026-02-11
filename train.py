@@ -38,9 +38,11 @@ def init_dist(args):
 
 def init_model(args):
     state = {}
-    if args.load_from:
-        log_rank_0(f"Loading pretrained state from {args.load_from}")
-        state = torch.load(args.load_from, map_location=torch.device("cpu"))
+    checkpoint_path = args.load_from
+    checkpoint_exists = bool(checkpoint_path) and os.path.isfile(checkpoint_path)
+    if checkpoint_exists:
+        log_rank_0(f"Loading pretrained state from {checkpoint_path}")
+        state = torch.load(checkpoint_path, map_location=torch.device("cpu"))
         pretrain_args = state["args"]
         pretrain_args.local_rank = args.local_rank
 
@@ -51,6 +53,8 @@ def init_model(args):
         log_rank_0("Loaded pretrained model state_dict.")
         flow_model = ConditionalFlowMatcher(args)
     else:
+        if checkpoint_path:
+            log_rank_0(f"No checkpoint found at {checkpoint_path}; starting from scratch.")
         graph_attn_model = AttnEncoderXL(args)
         flow_model = ConditionalFlowMatcher(args)
         for p in graph_attn_model.parameters():
@@ -118,9 +122,12 @@ def get_optimizer_and_scheduler(args, model, state=None):
     # )
 
     if state and args.resume:
-        optimizer.load_state_dict(state["optimizer"])
-        scheduler.load_state_dict(state["scheduler"])
-        log_rank_0("Loaded pretrained optimizer and scheduler state_dicts.")
+        if ("optimizer" in state) and ("scheduler" in state):
+            optimizer.load_state_dict(state["optimizer"])
+            scheduler.load_state_dict(state["scheduler"])
+            log_rank_0("Loaded pretrained optimizer and scheduler state_dicts.")
+        else:
+            log_rank_0("Checkpoint missing optimizer/scheduler; using fresh optimizer and scheduler.")
 
     return optimizer, scheduler
 
@@ -141,7 +148,7 @@ def main(args):
     init_dist(args)
     log_args(args, 'training')
     model, flow, state = init_model(args)
-    total_step = state["total_step"] if state else 0
+    total_step = state.get("total_step", 0) if state else 0
     log_rank_0(f"Number of parameters: {param_count(model)}")
 
     optimizer, scheduler = get_optimizer_and_scheduler(args, model, state)
@@ -159,7 +166,25 @@ def main(args):
     accum = 0
     g_norm = 0
     losses, accs = [], []
-    be_losses, cv_losses = [], []
+    ckpt_total_losses, ckpt_be_losses, ckpt_cv_losses = [], [], []
+    loss_history = state.get("loss_history", {
+        "step": [],
+        "total_loss": [],
+        "be_loss": [],
+        "cv_loss": [],
+    }) if state else {
+        "step": [],
+        "total_loss": [],
+        "be_loss": [],
+        "cv_loss": [],
+    }
+    for key in ("step", "total_loss", "be_loss", "cv_loss"):
+        loss_history.setdefault(key, [])
+    loss_history_path = os.path.join(args.model_path, "loss_history.csv")
+    if (not dist.is_initialized()) or (dist.get_rank() == 0):
+        if (not os.path.exists(loss_history_path)) or (len(loss_history["step"]) == 0):
+            with open(loss_history_path, "w") as history_o:
+                history_o.write("step,total_loss,be_loss,cv_loss\n")
     o_start = time.time()
     log_rank_0("Start training")
 
@@ -218,9 +243,13 @@ def main(args):
             loss = be_loss + cv_loss
 
             (loss / args.accumulation_count).backward()
-            be_losses.append(be_loss.item())
-            cv_losses.append(cv_loss.item())
-            losses.append(loss.item())
+            be_loss_value = be_loss.item()
+            cv_loss_value = cv_loss.item()
+            loss_value = loss.item()
+            losses.append(loss_value)
+            ckpt_total_losses.append(loss_value)
+            ckpt_be_losses.append(be_loss_value)
+            ckpt_cv_losses.append(cv_loss_value)
 
             accum += 1
             if accum == args.accumulation_count:
@@ -234,7 +263,7 @@ def main(args):
                            f"p_norm: {param_norm(model): .4f}, g_norm: {g_norm: .4f}, "
                            f"lr: {get_lr(optimizer): .6f}, "
                            f"elapsed time: {time.time() - o_start: .0f}")
-                losses, acc = [], []
+                losses, accs = [], []
 
             if (accum == 0) and (total_step > 0) and (total_step % args.eval_iter == 0):
                 val_count = 50
@@ -257,6 +286,18 @@ def main(args):
 
             if (accum == 0) and (total_step > 0) and (total_step % args.save_iter == 0):
                 n_iter = total_step // args.save_iter - 1
+                mean_total_loss = float(np.mean(ckpt_total_losses)) if ckpt_total_losses else float("nan")
+                mean_be_loss = float(np.mean(ckpt_be_losses)) if ckpt_be_losses else float("nan")
+                mean_cv_loss = float(np.mean(ckpt_cv_losses)) if ckpt_cv_losses else float("nan")
+                if (len(loss_history["step"]) == 0) or (loss_history["step"][-1] != int(total_step)):
+                    loss_history["step"].append(int(total_step))
+                    loss_history["total_loss"].append(mean_total_loss)
+                    loss_history["be_loss"].append(mean_be_loss)
+                    loss_history["cv_loss"].append(mean_cv_loss)
+                    with open(loss_history_path, "a") as history_o:
+                        history_o.write(
+                            f"{total_step},{mean_total_loss:.8f},{mean_be_loss:.8f},{mean_cv_loss:.8f}\n"
+                        )
                 log_rank_0(f"Saving at step {total_step}")
                 if scheduler is not None:
                     state = {
@@ -264,7 +305,8 @@ def main(args):
                         "total_step": total_step,
                         "state_dict": model.state_dict(),
                         "optimizer": optimizer.state_dict(),
-                        "scheduler": scheduler.state_dict()
+                        "scheduler": scheduler.state_dict(),
+                        "loss_history": loss_history
                     }
                 else:
                     state = {
@@ -272,8 +314,10 @@ def main(args):
                         "total_step": total_step,
                         "state_dict": model.state_dict(),
                         "optimizer": optimizer.state_dict(),
+                        "loss_history": loss_history
                     }
                 torch.save(state, os.path.join(args.model_path, f"model.{total_step}_{n_iter}.pt"))
+                ckpt_total_losses, ckpt_be_losses, ckpt_cv_losses = [], [], []
 
         # lastly
         if (args.accumulation_count > 1) and (accum > 0):

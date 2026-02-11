@@ -32,8 +32,8 @@ class Args:
     data_name = f"{DATA_NAME}"
     log_file = f"FlowER"
     load_from = ""
-    # resume = True
-    # load_from = f"{model_path}{MODEL_NAME}"
+    resume = True
+    load_from = f"{model_path}{MODEL_NAME}"
 
     backend = "nccl"
     num_workers = NUM_WORKERS
@@ -86,3 +86,6 @@ class Args:
     nbest = 3
     max_depth = 15
     chunk_size = 50
+
+    # chirality #
+    strip_spurious_stereo = True

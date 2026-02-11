@@ -4,8 +4,10 @@ from rdkit import Chem
 import numpy as np
 import sys
 from rdkit import RDLogger
-RDLogger.DisableLog('rdApp.*') 
 from multiprocessing import Pool, cpu_count
+from settings import Args as args
+RDLogger.DisableLog('rdApp.*') 
+
 
 np.set_printoptions(threshold=sys.maxsize, linewidth=500)
 torch.set_printoptions(profile="full")
@@ -40,6 +42,54 @@ ps = Chem.SmilesParserParams()
 ps.removeHs = False
 ps.sanitize = True
 
+def strip_spurious_stereochemistry_from_mol(mol):
+    """
+    Remove stereochemical tags that RDKit deems non-physical/non-applicable
+    while preserving atom-map numbers.
+    """
+    if mol is None:
+        return None
+
+    atom_maps = {}
+    for atom in mol.GetAtoms():
+        if atom.HasProp('molAtomMapNumber'):
+            atom_maps[atom.GetIdx()] = atom.GetIntProp('molAtomMapNumber')
+            atom.SetAtomMapNum(0)
+
+    # Cleanup + reassignment removes inconsistent stereo annotations.
+    Chem.rdmolops.CleanupChirality(mol)
+    Chem.AssignStereochemistry(mol, cleanIt=True, force=True, flagPossibleStereoCenters=True)
+
+    # Keep only tetrahedral tags that RDKit can actually assign stereochemistry to.
+    # Requiring a CIP code is stricter than checking _ChiralityPossible alone and
+    # removes many map/order-induced false positives.
+    for atom in mol.GetAtoms():
+        if atom.GetChiralTag() == Chem.rdchem.ChiralType.CHI_UNSPECIFIED:
+            continue
+        keep_atom_stereo = atom.HasProp('_ChiralityPossible') and atom.HasProp('_CIPCode')
+        if not keep_atom_stereo:
+            atom.SetChiralTag(Chem.rdchem.ChiralType.CHI_UNSPECIFIED)
+            if atom.HasProp('_CIPCode'):
+                atom.ClearProp('_CIPCode')
+
+    for atom in mol.GetAtoms():
+        atom_idx = atom.GetIdx()
+        if atom_idx in atom_maps:
+            atom.SetAtomMapNum(atom_maps[atom_idx])
+
+    return mol
+
+def strip_spurious_stereochemistry(smiles):
+    """
+    Return a mapped SMILES with only physically valid stereo tags retained.
+    Atom-map numbers are preserved.
+    """
+    mol = Chem.MolFromSmiles(smiles, ps)
+    if mol is None:
+        raise ValueError("Unable to parse SMILES for stereochemistry cleanup.")
+    mol = strip_spurious_stereochemistry_from_mol(mol)
+    return Chem.MolToSmiles(mol, isomericSmiles=True, allHsExplicit=True, canonical=False)
+
 def get_BE_matrix(r):
     rmol = Chem.MolFromSmiles(r, ps)
     Chem.Kekulize(rmol)
@@ -64,7 +114,8 @@ electron_to_bo = {val:key for key, val in bt_to_electron.items()}
 # TODO: Think about preprocessing the data with this.  Assign stereo, then pass in cleaned smiles and chiral vectors.
 def get_chiral_vec(r):
     mol = Chem.MolFromSmiles(r, ps)
-    Chem.rdmolops.CleanupChirality(mol)
+    if args.strip_spurious_stereo:
+        mol = strip_spurious_stereochemistry_from_mol(mol)
     max_natoms = len(mol.GetAtoms())
     chiral_vec = np.zeros(max_natoms)
     for atom in mol.GetAtoms():
