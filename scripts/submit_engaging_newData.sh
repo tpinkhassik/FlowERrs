@@ -17,10 +17,11 @@ set -euo pipefail
 
 # Usage:
 #   sbatch --export=ALL,CONDA_ENV=flower scripts/submit_engaging_newData.sh
+# Optional:
+#   sbatch --export=ALL,CONDA_ENV=flower,CONDA_MODULE_PREREQ=deprecated-modules,CONDA_MODULE=anaconda3/2022.05-x86_64 scripts/submit_engaging_newData.sh
 
-REPO_DIR="/orcd/home/002/ptim/FlowER/FlowERrs"
+REPO_DIR="/home/ptim/FlowER/FlowERrs"
 cd "$REPO_DIR"
-mkdir -p /home/ptim/orcd/scratch/logs
 
 if [[ -f /etc/profile ]]; then
   set +u
@@ -29,32 +30,9 @@ if [[ -f /etc/profile ]]; then
 fi
 
 
-module load deprecated-modules
-module load anaconda3/2022.05-x86_64
+module load miniforge
 
-CONDA_ENV_NAME="${CONDA_ENV:-flower}"
-if command -v conda >/dev/null 2>&1; then
-  eval "$(conda shell.bash hook)"
-  conda activate "${CONDA_ENV_NAME}"
-else
-  echo "conda command not found after module load; cannot activate ${CONDA_ENV_NAME}" >&2
-  exit 1
-fi
-
-python - <<'PY'
-import sys
-try:
-    import torch
-except Exception as e:
-    raise SystemExit(f"torch import failed: {e}")
-try:
-    import rdkit
-except Exception as e:
-    raise SystemExit(f"rdkit import failed: {e}")
-print(f"Python: {sys.executable}")
-print(f"Torch: {torch.__version__}")
-print(f"RDKit: {rdkit.__version__}")
-PY
+conda activate flower
 
 [ -f "$REPO_DIR/run_FlowER_large_newData.sh" ] || { echo "$REPO_DIR/run_FlowER_large_newData.sh not found"; exit 1; }
 sh "$REPO_DIR/run_FlowER_large_newData.sh"
