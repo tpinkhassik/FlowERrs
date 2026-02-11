@@ -1,5 +1,7 @@
 #!/bin/bash
 #SBATCH -J FlowER_newData
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=ptim@mit.edu
 #SBATCH -p mit_preemptable
 #SBATCH --gres=gpu:h200:1
 #SBATCH -N 1
@@ -20,7 +22,9 @@ cd "$(dirname "$0")/.."
 mkdir -p /home/ptim/orcd/scratch/logs
 
 if [[ -f /etc/profile ]]; then
+  set +u
   source /etc/profile
+  set -u
 fi
 
 if command -v module >/dev/null 2>&1; then
