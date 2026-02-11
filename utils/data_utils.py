@@ -369,6 +369,7 @@ class ReactionDataset(Dataset):
             src_smi = src_smi.strip()
             try:
                 _ = get_BE_matrix(src_smi)
+                _ = get_chiral_vec(src_smi)
                 src_vocab_id_list, src_len = smi2vocabid(src_smi)
             except Exception as e:
                 print(e)
@@ -532,8 +533,19 @@ class ReactionDataset(Dataset):
             if not self.reactant_only:
                 tgt_matrix = get_BE_matrix(self.tgt_smis[data_index])
                 tgt_chiral_vec = get_chiral_vec(self.tgt_smis[data_index])
-                tgt_matrix = np.pad(tgt_matrix, ((0, max_len - src_len), (0, max_len - src_len)), 
-                        mode='constant', constant_values=MATRIX_PAD)
+                tgt_len = tgt_matrix.shape[0]
+                tgt_matrix = np.pad(
+                    tgt_matrix,
+                    ((0, max_len - tgt_len), (0, max_len - tgt_len)),
+                    mode='constant',
+                    constant_values=MATRIX_PAD
+                )
+                tgt_chiral_vec = np.pad(
+                    tgt_chiral_vec,
+                    (0, max_len - tgt_len),
+                    mode='constant',
+                    constant_values=MATRIX_PAD
+                )
                 tgt_matrix_batch.append(tgt_matrix)
                 tgt_chiral_vec_batch.append(tgt_chiral_vec)
                 tgt_smiles_batch.append(self.tgt_smis[data_index])
@@ -546,7 +558,9 @@ class ReactionDataset(Dataset):
         if not self.reactant_only: 
             tgt_matrix_batch = torch.as_tensor(np.stack(tgt_matrix_batch), dtype=torch.float)
             tgt_chiral_vec_batch = torch.as_tensor(np.stack(tgt_chiral_vec_batch), dtype=torch.float)
-        else: tgt_matrix_batch = src_matrix_batch
+        else:
+            tgt_matrix_batch = src_matrix_batch
+            tgt_chiral_vec_batch = src_chiral_vec_batch
         
         node_mask = (src_matrix_batch[:, :, 0] != MATRIX_PAD)
         matrix_masks = (node_mask.unsqueeze(1) * node_mask.unsqueeze(2)).long()
