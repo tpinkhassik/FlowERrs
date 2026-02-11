@@ -6,8 +6,8 @@
 #SBATCH --gres=gpu:h200:1
 #SBATCH -N 1
 #SBATCH -n 1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=256G
 #SBATCH --time=47:59:59
 #SBATCH --output=/home/ptim/orcd/scratch/logs/%x_%j.out
 #SBATCH --error=/home/ptim/orcd/scratch/logs/%x_%j.err

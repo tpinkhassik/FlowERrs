@@ -3,6 +3,7 @@ from torch.utils.data import Dataset
 from rdkit import Chem
 import numpy as np
 import sys
+import os
 from rdkit import RDLogger
 from multiprocessing import Pool, cpu_count
 from settings import Args as args
@@ -41,6 +42,40 @@ def count_lone_pairs(a):
 ps = Chem.SmilesParserParams()
 ps.removeHs = False
 ps.sanitize = True
+
+
+def _safe_int_env(var_name):
+    value = os.environ.get(var_name)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _available_cpu_count():
+    counts = [cpu_count()]
+    if hasattr(os, "sched_getaffinity"):
+        try:
+            counts.append(len(os.sched_getaffinity(0)))
+        except Exception:
+            pass
+    slurm_cpus = _safe_int_env("SLURM_CPUS_PER_TASK")
+    if slurm_cpus is not None:
+        counts.append(slurm_cpus)
+    return max(1, min(counts))
+
+
+def _resolve_parse_workers():
+    # Priority: explicit parser setting > dataloader workers > safe auto-detect.
+    requested = _safe_int_env("PARSE_WORKERS")
+    if requested is None:
+        requested = _safe_int_env("NUM_WORKERS")
+    max_available = _available_cpu_count()
+    if requested is None:
+        requested = min(max_available, 8)
+    return max(1, min(requested, max_available))
 
 def strip_spurious_stereochemistry_from_mol(mol):
     """
@@ -374,30 +409,31 @@ class ReactionDataset(Dataset):
               == len(self.tgt_lens) == len(self.src_token_ids) == len(self.tgt_token_ids)
 
     def parse_data_parallel(self):
-
-        p = Pool(cpu_count())
-        results = p.imap(process_smiles, ((smiles) for smiles in self.smiles_list))
-        p.close()
-        p.join()
+        num_workers = _resolve_parse_workers()
+        if num_workers <= 1:
+            self.parse_data()
+            return
 
         # Prepare the final data structures
         count = 0
         total = 0
-        for result in results:
-            total += 1
-            if result['src_vocab_id_list'] is [] or result['src_len'] == 0: 
-                # print(f"{result['src_smi']}>>{result['tgt_smi']}")
-                # print(result['error'])
-                count += 1
-                continue
-            self.src_smis.append(result['src_smi'])
-            self.tgt_smis.append(result['tgt_smi'])
-            self.src_token_ids.append(result['src_vocab_id_list'])
-            self.tgt_token_ids.append(result['tgt_vocab_id_list'])
-            self.src_lens.append(result['src_len'])
-            self.tgt_lens.append(result['tgt_len'])
+        chunk_size = max(1, len(self.smiles_list) // (num_workers * 8))
+        with Pool(processes=num_workers) as p:
+            results = p.imap(process_smiles, self.smiles_list, chunksize=chunk_size)
+            for result in results:
+                total += 1
+                if len(result['src_vocab_id_list']) == 0 or result['src_len'] == 0:
+                    count += 1
+                    continue
+                self.src_smis.append(result['src_smi'])
+                self.tgt_smis.append(result['tgt_smi'])
+                self.src_token_ids.append(result['src_vocab_id_list'])
+                self.tgt_token_ids.append(result['tgt_vocab_id_list'])
+                self.src_lens.append(result['src_len'])
+                self.tgt_lens.append(result['tgt_len'])
 
-        print(f"{count*100/total}% data is unparseable")
+        if total > 0:
+            print(f"{count*100/total}% data is unparseable")
 
     def sort(self):
         self.data_indices = np.argsort(self.src_lens)
