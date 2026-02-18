@@ -3,10 +3,9 @@
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ptim@mit.edu
 #SBATCH -p mit_preemptable
-#SBATCH --gres=gpu:h200:1
+#SBATCH -G h200:1
 #SBATCH -N 1
-#SBATCH -n 1
-#SBATCH --cpus-per-task=12
+#SBATCH -n 8
 #SBATCH --mem=256G
 #SBATCH --time=47:59:59
 #SBATCH --output=/home/ptim/orcd/scratch/logs/%x_%j.out
