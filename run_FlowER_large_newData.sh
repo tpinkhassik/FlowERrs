@@ -8,7 +8,7 @@ export RBF_HIGH=12
 export RBF_GAP=0.1
 export SIGMA=0.15
 
-export MODEL_NAME="model.2880000_95.pt" # your trained checkpoint here
+export MODEL_NAME="" # your trained checkpoint here
 
 export TRAIN_BATCH_SIZE=4096
 export VAL_BATCH_SIZE=4096
@@ -24,8 +24,8 @@ export NODE_RANK=0
 export MASTER_ADDR=localhost
 export MASTER_PORT=1235
 
-export TRAIN_FILE=${TRAIN_FILE:-/home/ptim/orcd/scratch/data/uspto-stereo_out_expH.txt}
-export VAL_FILE=${VAL_FILE:-/home/ptim/orcd/scratch/data/uspto-stereo_out_expH_val.txt}
+export TRAIN_FILE=${TRAIN_FILE:-/home/ptim/orcd/scratch/data/FlowERrs_test.txt}
+export VAL_FILE=${VAL_FILE:-/home/ptim/orcd/scratch/data/FlowERrs_val.txt}
 # export TEST_FILE=${TEST_FILE:-/home/ptim/FlowER/FlowERrs/data/$DATA_NAME/test.txt}
 # export TEST_FILE=${TEST_FILE:-/home/ptim/FlowER/FlowERrs/data/$DATA_NAME/beam.txt}
 
