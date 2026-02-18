@@ -5,7 +5,7 @@
 #SBATCH -p mit_preemptable
 #SBATCH --gres=gpu:h200:1
 #SBATCH -N 1
-#SBATCH -c 8
+#SBATCH -n 12
 #SBATCH --exclude=node2507,node2510
 #SBATCH --mem=256G
 #SBATCH --time=23:59:59

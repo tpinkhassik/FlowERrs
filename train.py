@@ -1,10 +1,9 @@
 import os
 import sys
+import glob
 import time
 import datetime
 import logging
-import glob
-import re
 import numpy as np
 import torch
 import torch.nn as nn
@@ -25,57 +24,6 @@ import torch.optim as optim
 torch.set_printoptions(precision=4, profile="full", sci_mode=False, linewidth=10000)
 np.set_printoptions(threshold=sys.maxsize, precision=4, suppress=True, linewidth=500)
 
-CKPT_NAME_RE = re.compile(r"model\.(\d+)_(\d+)\.pt$")
-
-def _find_latest_checkpoint(model_path: str):
-    if (not model_path) or (not os.path.isdir(model_path)):
-        return None
-
-    candidates = glob.glob(os.path.join(model_path, "model.*.pt"))
-    if not candidates:
-        return None
-
-    parsed = []
-    fallback = []
-    for path in candidates:
-        match = CKPT_NAME_RE.fullmatch(os.path.basename(path))
-        if match is None:
-            fallback.append(path)
-            continue
-        total_step = int(match.group(1))
-        save_idx = int(match.group(2))
-        parsed.append((total_step, save_idx, path))
-
-    if parsed:
-        parsed.sort(key=lambda x: (x[0], x[1]))
-        return parsed[-1][2]
-
-    fallback.sort(key=os.path.getmtime)
-    return fallback[-1]
-
-def _resolve_checkpoint_path(args):
-    explicit_path = args.load_from
-    if explicit_path and os.path.isfile(explicit_path):
-        return explicit_path
-
-    if args.resume:
-        latest_path = _find_latest_checkpoint(args.model_path)
-        if latest_path is not None:
-            if explicit_path and (latest_path != explicit_path):
-                log_rank_0(
-                    f"Requested checkpoint not found at {explicit_path}; "
-                    f"resuming from latest checkpoint {latest_path}"
-                )
-            else:
-                log_rank_0(f"Resuming from latest checkpoint {latest_path}")
-            return latest_path
-
-    if explicit_path:
-        log_rank_0(f"No checkpoint found at {explicit_path}; starting from scratch.")
-    else:
-        log_rank_0("No checkpoint specified or found; starting from scratch.")
-    return ""
-
 def init_dist(args):
     if args.local_rank != -1:
         dist.init_process_group(backend=args.backend,
@@ -91,8 +39,11 @@ def init_dist(args):
 
 def init_model(args):
     state = {}
-    checkpoint_path = _resolve_checkpoint_path(args)
-    checkpoint_exists = bool(checkpoint_path)
+    checkpoint_path: str = args.load_from
+    if (checkpoint_path == "") or (not os.path.isfile(checkpoint_path)):
+        ckpts = glob.glob(os.path.join(args.model_path, "model.*.pt"))
+        checkpoint_path = max(ckpts, key=os.path.getmtime) if ckpts else ""
+    checkpoint_exists = bool(checkpoint_path) and os.path.isfile(checkpoint_path)
     if checkpoint_exists:
         log_rank_0(f"Loading pretrained state from {checkpoint_path}")
         state = torch.load(checkpoint_path, map_location=torch.device("cpu"))
@@ -106,6 +57,8 @@ def init_model(args):
         log_rank_0("Loaded pretrained model state_dict.")
         flow_model = ConditionalFlowMatcher(args)
     else:
+        if checkpoint_path:
+            log_rank_0(f"No checkpoint found at {checkpoint_path}; starting from scratch.")
         graph_attn_model = AttnEncoderXL(args)
         flow_model = ConditionalFlowMatcher(args)
         for p in graph_attn_model.parameters():
