@@ -257,11 +257,26 @@ def smi2vocabid(smi):
         smi_vocab_id_list[atom.GetIntProp('molAtomMapNumber') - 1] = idx
     return smi_vocab_id_list, len(smi_vocab_id_list)
 
+def _parse_reaction_line(smiles_line: str):
+    fields = smiles_line.strip().split('|')
+    if len(fields) == 0 or '>>' not in fields[0]:
+        raise ValueError("Invalid reaction record format.")
+
+    src_smi, tgt_smi = fields[0].split('>>')
+
+    # Backward compatible with older files that do not include a weight column.
+    step_weight = 1.0
+    if len(fields) > 4 and fields[4] != '':
+        step_weight = float(fields[4])
+
+    return src_smi, tgt_smi, step_weight
+
 def process_smiles(smiles):
-    src_smi, tgt_smi = smiles.strip().split('|')[0].split('>>')
+    step_weight = 1.0
 
     error = ""
     try:
+        src_smi, tgt_smi, step_weight = _parse_reaction_line(smiles)
         _ = get_BE_matrix(src_smi)
         _ = get_chiral_vec(src_smi)
         _ = get_BE_matrix(tgt_smi)
@@ -282,7 +297,8 @@ def process_smiles(smiles):
         'src_vocab_id_list': src_vocab_id_list,
         'tgt_vocab_id_list': tgt_vocab_id_list,
         'src_len': src_len,
-        'tgt_len': tgt_len
+        'tgt_len': tgt_len,
+        'step_weight': step_weight,
         # "error": error
     }
 
@@ -299,6 +315,7 @@ class ReactionBatch:
                  node_masks: torch.Tensor,
                  src_smiles_list: list,
                  tgt_smiles_list: list,
+                 step_weights: torch.Tensor,
                  ):
         self.src_data_indices = src_data_indices
         self.src_token_ids = src_token_ids
@@ -311,6 +328,9 @@ class ReactionBatch:
         self.node_masks = node_masks
         self.src_smiles_list = src_smiles_list
         self.tgt_smiles_list = tgt_smiles_list
+        self.step_weights = step_weights
+        # Backward-compatible alias.
+        self.weights = step_weights
 
     def to(self, device):
         self.src_data_indices = self.src_data_indices.to(device)
@@ -322,6 +342,8 @@ class ReactionBatch:
         self.tgt_chiral_vecs = self.tgt_chiral_vecs.to(device)
         self.matrix_masks = self.matrix_masks.to(device)
         self.node_masks = self.node_masks.to(device)
+        self.step_weights = self.step_weights.to(device)
+        self.weights = self.step_weights
 
     def pin_memory(self):
         self.src_data_indices = self.src_data_indices.pin_memory()
@@ -333,6 +355,8 @@ class ReactionBatch:
         self.tgt_chiral_vecs = self.tgt_chiral_vecs.pin_memory()
         self.matrix_masks = self.matrix_masks.pin_memory()
         self.node_masks = self.node_masks.pin_memory()
+        self.step_weights = self.step_weights.pin_memory()
+        self.weights = self.step_weights
 
         return self
 
@@ -350,6 +374,7 @@ class ReactionDataset(Dataset):
 
         self.src_lens = []
         self.tgt_lens = []
+        self.step_weights = []
 
         if reactant_only:
             self.parse_reactant_only()
@@ -379,14 +404,14 @@ class ReactionDataset(Dataset):
             self.src_token_ids.append(src_vocab_id_list)
             self.src_lens.append(src_len)
             self.tgt_lens.append(src_len)
+            self.step_weights.append(1.0)
 
         assert len(self.src_smis) > 0, "Empty Data"
 
     def parse_data(self):
         for smiles in self.smiles_list:
-            src_smi, tgt_smi = smiles.strip().split('|')[0].split('>>')
-
             try:
+                src_smi, tgt_smi, step_weight = _parse_reaction_line(smiles)
                 _ = get_BE_matrix(src_smi)
                 _ = get_chiral_vec(src_smi)
                 _ = get_BE_matrix(tgt_smi)    
@@ -405,9 +430,10 @@ class ReactionDataset(Dataset):
             self.tgt_token_ids.append(tgt_vocab_id_list)
             self.src_lens.append(src_len)
             self.tgt_lens.append(tgt_len)
+            self.step_weights.append(step_weight)
 
         assert len(self.src_smis) == len(self.tgt_smis) == len(self.src_lens) == len(self.tgt_lens)  \
-              == len(self.tgt_lens) == len(self.src_token_ids) == len(self.tgt_token_ids)
+              == len(self.tgt_lens) == len(self.src_token_ids) == len(self.tgt_token_ids) == len(self.step_weights)
 
     def parse_data_parallel(self):
         num_workers = _resolve_parse_workers()
@@ -432,6 +458,7 @@ class ReactionDataset(Dataset):
                 self.tgt_token_ids.append(result['tgt_vocab_id_list'])
                 self.src_lens.append(result['src_len'])
                 self.tgt_lens.append(result['tgt_len'])
+                self.step_weights.append(result['step_weight'])
 
         if total > 0:
             print(f"{count*100/total}% data is unparseable")
@@ -505,6 +532,7 @@ class ReactionDataset(Dataset):
         src_chiral_vec_batch = []
         tgt_matrix_batch = []
         tgt_chiral_vec_batch = []
+        step_weight_batch = []
 
         # Don't need special chiral handling for smiles, I think, at least.
         src_smiles_batch = []
@@ -529,6 +557,7 @@ class ReactionDataset(Dataset):
             src_matrix_batch.append(src_matrix)
             src_chiral_vec_batch.append(src_chiral_vec)
             src_smiles_batch.append(self.src_smis[data_index])
+            step_weight_batch.append(self.step_weights[data_index])
 
             if not self.reactant_only:
                 tgt_matrix = get_BE_matrix(self.tgt_smis[data_index])
@@ -555,6 +584,7 @@ class ReactionDataset(Dataset):
         src_token_id_batch = torch.stack(src_token_id_batch)
         src_matrix_batch = torch.as_tensor(np.stack(src_matrix_batch), dtype=torch.float)
         src_chiral_vec_batch = torch.as_tensor(np.stack(src_chiral_vec_batch), dtype=torch.float)
+        step_weight_batch = torch.as_tensor(step_weight_batch, dtype=torch.float)
         if not self.reactant_only: 
             tgt_matrix_batch = torch.as_tensor(np.stack(tgt_matrix_batch), dtype=torch.float)
             tgt_chiral_vec_batch = torch.as_tensor(np.stack(tgt_chiral_vec_batch), dtype=torch.float)
@@ -564,6 +594,10 @@ class ReactionDataset(Dataset):
         
         node_mask = (src_matrix_batch[:, :, 0] != MATRIX_PAD)
         matrix_masks = (node_mask.unsqueeze(1) * node_mask.unsqueeze(2)).long()
+        
+        # Predict chirality deltas while preserving pad sentinels.
+        tgt_chiral_vec_batch = tgt_chiral_vec_batch - src_chiral_vec_batch
+        tgt_chiral_vec_batch = tgt_chiral_vec_batch.masked_fill(~node_mask, MATRIX_PAD)
 
         reaction_batch = ReactionBatch(
             src_data_indices=src_data_indices,
@@ -576,7 +610,8 @@ class ReactionDataset(Dataset):
             matrix_masks=matrix_masks,
             node_masks=node_mask,
             src_smiles_list=src_smiles_batch,
-            tgt_smiles_list=tgt_smiles_batch
+            tgt_smiles_list=tgt_smiles_batch,
+            step_weights=step_weight_batch
         )
         
         return reaction_batch

@@ -59,10 +59,18 @@ def custom_round(x):
         except: output.append(torch.round(x[i]))
     return torch.stack(output)
 
+def chiral_delta_round(x: torch.Tensor) -> torch.Tensor:
+    """
+    Round a predicted chirality delta, bounded to be within -2 and +2.
+    Args: x (torch.Tensor): input delta-chirality output
+    Returns: torch.Tensor: rounded tensor with elements in {-2, -1, 0, +1, +2}
+    """
+    return torch.clamp(torch.round(x), min=-2, max=2)
+
 def chiral_round(x: torch.Tensor) -> torch.Tensor:
     """
     Round a chiral vector, bounded to be within -1 and +1.
-    Args: x (torch.Tensor): input chiral vector output
+    Args: x (torch.Tensor): input absolute chiral vector output
     Returns: torch.Tensor: rounded tensor with elements in {-1, 0, +1}
     """
     return torch.clamp(torch.round(x), min=-1, max=1)
@@ -91,6 +99,8 @@ def predict_batch(args, batch_idx, data_batch, model, flow, split, rand_matrix=N
     # cv1 = data_batch.tgt_chiral_vecs
     matrix_masks = data_batch.matrix_masks
     node_masks = data_batch.node_masks
+    cv0_delta = torch.zeros_like(cv0)
+    cv0_delta = torch.where(node_masks.bool(), cv0_delta, cv0)
 
     batch_size, n, n = x0.shape
     
@@ -105,7 +115,7 @@ def predict_batch(args, batch_idx, data_batch, model, flow, split, rand_matrix=N
     for sample_size in split_sample_batches:
         src_data_indices = src_data_indices.repeat_interleave(sample_size, dim=0)
         x0_repeated = x0.repeat_interleave(sample_size, dim=0)
-        cv0_repeated = cv0.repeat_interleave(sample_size, dim=0)
+        cv0_repeated = cv0_delta.repeat_interleave(sample_size, dim=0)
 
         x0_sample_repeated = flow.sample_be_matrix(x0_repeated)
         cv0_sample_repeated = flow.sample_chiral_vec(cv0_repeated)
@@ -227,7 +237,9 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
 
 
                 product_BE_matrices = custom_round(last_be_step)
-                product_chiral_vecs = chiral_round(last_cv_step)
+                pred_delta_chiral_vecs = chiral_delta_round(last_cv_step)
+                src_chiral_vecs = cv0.repeat_interleave(args.sample_size, dim=0).cpu()
+                product_chiral_vecs = chiral_round(src_chiral_vecs + pred_delta_chiral_vecs)
 
                 product_BE_matrices_batch = torch.split(product_BE_matrices, args.sample_size)
                 product_chiral_vecs_batch = torch.split(product_chiral_vecs, args.sample_size)
@@ -316,7 +328,8 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
                         num_nodes = y_len[idx]
                         pred_prod_chiral_vec = pred_prod_chiral_vec[:num_nodes]
                         reac_chiral_vec = cv0[idx][:num_nodes].detach().cpu().numpy()
-                        tgt_chiral_vec = tgt_chiral_vecs[:num_nodes].cpu().numpy()
+                        tgt_delta_chiral_vec = tgt_chiral_vecs[:num_nodes].cpu().numpy()
+                        tgt_chiral_vec = np.clip(reac_chiral_vec + tgt_delta_chiral_vec, -1, 1)
                         assert pred_prod_chiral_vec.shape == reac_chiral_vec.shape, "pred and react cv not the same shape"
 
                         correct_centers += count *(pred_prod_chiral_vec == tgt_chiral_vec).sum()

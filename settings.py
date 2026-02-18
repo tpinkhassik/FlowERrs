@@ -31,9 +31,8 @@ class Args:
     result_path = os.environ.get("RESULT_PATH")
     data_name = f"{DATA_NAME}"
     log_file = f"FlowER"
-    load_from = ""
     resume = True
-    load_from = f"{model_path}{MODEL_NAME}"
+    load_from = os.path.join(model_path, MODEL_NAME) if (model_path and MODEL_NAME) else ""
 
     backend = "nccl"
     num_workers = NUM_WORKERS

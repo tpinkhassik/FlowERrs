@@ -3,6 +3,8 @@ import sys
 import time
 import datetime
 import logging
+import glob
+import re
 import numpy as np
 import torch
 import torch.nn as nn
@@ -23,6 +25,57 @@ import torch.optim as optim
 torch.set_printoptions(precision=4, profile="full", sci_mode=False, linewidth=10000)
 np.set_printoptions(threshold=sys.maxsize, precision=4, suppress=True, linewidth=500)
 
+CKPT_NAME_RE = re.compile(r"model\.(\d+)_(\d+)\.pt$")
+
+def _find_latest_checkpoint(model_path: str):
+    if (not model_path) or (not os.path.isdir(model_path)):
+        return None
+
+    candidates = glob.glob(os.path.join(model_path, "model.*.pt"))
+    if not candidates:
+        return None
+
+    parsed = []
+    fallback = []
+    for path in candidates:
+        match = CKPT_NAME_RE.fullmatch(os.path.basename(path))
+        if match is None:
+            fallback.append(path)
+            continue
+        total_step = int(match.group(1))
+        save_idx = int(match.group(2))
+        parsed.append((total_step, save_idx, path))
+
+    if parsed:
+        parsed.sort(key=lambda x: (x[0], x[1]))
+        return parsed[-1][2]
+
+    fallback.sort(key=os.path.getmtime)
+    return fallback[-1]
+
+def _resolve_checkpoint_path(args):
+    explicit_path = args.load_from
+    if explicit_path and os.path.isfile(explicit_path):
+        return explicit_path
+
+    if args.resume:
+        latest_path = _find_latest_checkpoint(args.model_path)
+        if latest_path is not None:
+            if explicit_path and (latest_path != explicit_path):
+                log_rank_0(
+                    f"Requested checkpoint not found at {explicit_path}; "
+                    f"resuming from latest checkpoint {latest_path}"
+                )
+            else:
+                log_rank_0(f"Resuming from latest checkpoint {latest_path}")
+            return latest_path
+
+    if explicit_path:
+        log_rank_0(f"No checkpoint found at {explicit_path}; starting from scratch.")
+    else:
+        log_rank_0("No checkpoint specified or found; starting from scratch.")
+    return ""
+
 def init_dist(args):
     if args.local_rank != -1:
         dist.init_process_group(backend=args.backend,
@@ -38,8 +91,8 @@ def init_dist(args):
 
 def init_model(args):
     state = {}
-    checkpoint_path = args.load_from
-    checkpoint_exists = bool(checkpoint_path) and os.path.isfile(checkpoint_path)
+    checkpoint_path = _resolve_checkpoint_path(args)
+    checkpoint_exists = bool(checkpoint_path)
     if checkpoint_exists:
         log_rank_0(f"Loading pretrained state from {checkpoint_path}")
         state = torch.load(checkpoint_path, map_location=torch.device("cpu"))
@@ -53,8 +106,6 @@ def init_model(args):
         log_rank_0("Loaded pretrained model state_dict.")
         flow_model = ConditionalFlowMatcher(args)
     else:
-        if checkpoint_path:
-            log_rank_0(f"No checkpoint found at {checkpoint_path}; starting from scratch.")
         graph_attn_model = AttnEncoderXL(args)
         flow_model = ConditionalFlowMatcher(args)
         for p in graph_attn_model.parameters():
@@ -209,21 +260,23 @@ def main(args):
             x0 = train_batch.src_matrices
             x1 = train_batch.tgt_matrices
 
-            cv0 = train_batch.src_chiral_vecs
             cv1 = train_batch.tgt_chiral_vecs
 
 
             matrix_masks = train_batch.matrix_masks
             node_masks = train_batch.node_masks
+            step_weights = train_batch.step_weights.float()
             
 
             x0_sample = flow.sample_be_matrix(x0)
-            cv0_sample = flow.sample_chiral_vec(cv0)
+            cv0_delta = torch.zeros_like(cv1)
+            cv0_delta = torch.where(node_masks.bool(), cv0_delta, cv1)
+            cv0_sample = flow.sample_chiral_vec(cv0_delta)
 
             t = torch.rand(x0.shape[0]).type_as(x0)
             
 
-            xt, cvt = flow.sample_conditional_pt(x0, x1, cv0, cv1, t)
+            xt, cvt = flow.sample_conditional_pt(x0, x1, cv0_delta, cv1, t)
             ut = flow.compute_conditional_vector_field(x0_sample, x1)
             u_cvt = flow.compute_conditional_vector_field(cv0_sample, cv1)
 
@@ -234,10 +287,12 @@ def main(args):
             vt, v_cvt = model(y_emb, y_len, xt, t, cvt)
 
             
-            be_loss = (vt - ut) * matrix_masks 
-            be_loss = torch.sum((be_loss) ** 2) / be_loss.shape[0]
-            cv_loss = (v_cvt - u_cvt) * node_masks
-            cv_loss = torch.sum((cv_loss) ** 2) / cv_loss.shape[0]
+            be_err2 = ((vt - ut) * matrix_masks) ** 2
+            cv_err2 = ((v_cvt - u_cvt) * node_masks) ** 2
+
+            weight_denom = step_weights.sum().clamp_min(1e-12)
+            be_loss = torch.sum(be_err2 * step_weights[:, None, None]) / weight_denom
+            cv_loss = torch.sum(cv_err2 * step_weights[:, None]) / weight_denom
 
             #TODO: Implement FAMO or Bloop or the like to do multiobjective learning.
             loss = be_loss + cv_loss
