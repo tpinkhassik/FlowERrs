@@ -31,7 +31,7 @@ class Args:
     result_path = os.environ.get("RESULT_PATH")
     data_name = f"{DATA_NAME}"
     log_file = f"FlowER"
-    load_from: str = ""
+    load_from: str = "model.180000_5.pt"
     # resume = True
     # load_from = f"{model_path}{MODEL_NAME}" 
 

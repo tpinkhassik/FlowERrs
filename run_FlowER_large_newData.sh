@@ -2,7 +2,7 @@
 
 
 export DATA_NAME="flower_new_dataset"
-export EXP_NAME="best_large_hyperparam"
+export EXP_NAME="mit_normal_gpu_chi_test"
 export EMB_DIM=256
 export RBF_HIGH=12
 export RBF_GAP=0.1
@@ -26,7 +26,7 @@ export MASTER_PORT=1235
 
 export TRAIN_FILE=${TRAIN_FILE:-/home/ptim/orcd/scratch/data/FlowERrs_test.txt}
 export VAL_FILE=${VAL_FILE:-/home/ptim/orcd/scratch/data/FlowERrs_val.txt}
-# export TEST_FILE=${TEST_FILE:-/home/ptim/FlowER/FlowERrs/data/$DATA_NAME/test.txt}
+ export TEST_FILE=${TEST_FILE:-/home/ptim/FlowER/FlowERrs/data/$DATA_NAME/FlowERrs_test.txt}
 # export TEST_FILE=${TEST_FILE:-/home/ptim/FlowER/FlowERrs/data/$DATA_NAME/beam.txt}
 
 
@@ -36,13 +36,13 @@ export RESULT_PATH=/home/ptim/orcd/scratch/FlowERrs_results/$DATA_NAME/$EXP_NAME
 
  [ -f $TRAIN_FILE ] || { echo $TRAIN_FILE does not exist; exit; }
  [ -f $VAL_FILE ] || { echo $VAL_FILE does not exist; exit; }
-# [ -f $TEST_FILE ] || { echo $TEST_FILE does not exist; exit; }
+ [ -f $TEST_FILE ] || { echo $TEST_FILE does not exist; exit; }
 
 
-export SCALE=4 # smaller sample size during training validation
-sh /home/ptim/FlowER/FlowERrs/scripts/train.sh
+#export SCALE=4 # smaller sample size during training validation
+#sh /home/ptim/FlowER/FlowERrs/scripts/train.sh
 
 export SCALE=1 # larger sample size during testing
-# sh scripts/eval_multiGPU.sh
+sh scripts/eval_multiGPU.sh
 # sh scripts/search.sh
 # sh scripts/search_multiGPU.sh

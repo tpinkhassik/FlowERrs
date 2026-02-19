@@ -392,7 +392,7 @@ def main(args):
     else:
         phase = "test"
         checkpoints = [os.path.join(args.model_path, args.model_name)]
-
+        
 
     for ckpt_i, checkpoint in enumerate(checkpoints):
         state = torch.load(checkpoint, weights_only=False, map_location=device)

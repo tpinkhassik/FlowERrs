@@ -1,14 +1,14 @@
 #!/bin/bash
-#SBATCH -J FlowER_newData
+#SBATCH -J FlowER_newData_mit_normal
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ptim@mit.edu
-#SBATCH -p mit_preemptable
-#SBATCH --gres=gpu:h200:1
+#SBATCH -p sched_mit_ccoley
+#SBATCH -G 8
 #SBATCH -N 1
-#SBATCH -n 12
+#SBATCH -n 8
 #SBATCH --exclude=node2507,node2510
 #SBATCH --mem=256G
-#SBATCH --time=23:59:59
+#SBATCH --time=5:59:59
 #SBATCH --output=/home/ptim/orcd/scratch/logs/%x_%j.out
 #SBATCH --error=/home/ptim/orcd/scratch/logs/%x_%j.err
 
