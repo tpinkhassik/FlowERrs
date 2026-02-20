@@ -71,7 +71,8 @@ def init_model(args):
         graph_attn_model = DDP(
             graph_attn_model,
             device_ids=[args.local_rank],
-            output_device=args.local_rank
+            output_device=args.local_rank,
+            find_unused_parameters=True
         )
         log_rank_0("DDP setup finished")
 

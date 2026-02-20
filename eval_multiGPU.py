@@ -103,6 +103,7 @@ def predict_batch(args, batch_idx, data_batch, model, flow, split, rand_matrix=N
     cv0_delta = torch.where(node_masks.bool(), cv0_delta, cv0)
 
     batch_size, n, n = x0.shape
+    amp_enabled = bool(getattr(args, "use_bf16", False)) and (args.device.type == "cuda")
     
     log_rank_0(f"Batch idx: {batch_idx}, batch_shape {batch_size, n, n} {(time.time() - start): .2f}s")
     # --------ODE inference--------------#
@@ -133,12 +134,14 @@ def predict_batch(args, batch_idx, data_batch, model, flow, split, rand_matrix=N
         torch.cuda.empty_cache()
 
         y_repeated = y.repeat_interleave(sample_size, dim=0)
-        y_emb_repeated = model.id2emb(y_repeated)
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=amp_enabled):
+            y_emb_repeated = model.id2emb(y_repeated)
         y_len_batch_repeated = y_len.repeat_interleave(sample_size, dim=0)
         
         def velocity(t, state):
             x, cv = state
-            v_be, v_cv = model.forward(y_emb_repeated, y_len_batch_repeated, x, t, cv)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=amp_enabled):
+                v_be, v_cv = model.forward(y_emb_repeated, y_len_batch_repeated, x, t, cv)
             return (v_be, v_cv)
 
         traj_be, traj_cv = torchdiffeq.odeint_adjoint(

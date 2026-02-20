@@ -2,13 +2,13 @@
 #SBATCH -J FlowER_newData_mit_normal
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ptim@mit.edu
-#SBATCH -p mit_preemptable
-#SBATCH -G h100:2
+#SBATCH -p mit_normal_gpu
+#SBATCH -G h200:2
 #SBATCH -N 1
-#SBATCH -n 16
+#SBATCH -c 32
 #SBATCH --exclude=node2507,node2510
 #SBATCH --mem=256G
-#SBATCH --time=47:59:59
+#SBATCH --time=5:59:59
 #SBATCH --output=/home/ptim/orcd/scratch/logs/%x_%j.out
 #SBATCH --error=/home/ptim/orcd/scratch/logs/%x_%j.err
 #SBATCH --requeue

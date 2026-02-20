@@ -14,8 +14,8 @@ export TRAIN_BATCH_SIZE=4096
 export VAL_BATCH_SIZE=4096
 export TEST_BATCH_SIZE=4096
 
-export PARSE_WORKERS=4
-export NUM_WORKERS=4
+export PARSE_WORKERS=8
+export NUM_WORKERS=8
 export CUDA_VISIBLE_DEVICES=0,1
 export NUM_GPUS_PER_NODE=2
 
@@ -26,8 +26,8 @@ export MASTER_PORT=1235
 
 export TRAIN_FILE=${TRAIN_FILE:-/home/ptim/orcd/scratch/data/FlowERrs_train.txt}
 export VAL_FILE=${VAL_FILE:-/home/ptim/orcd/scratch/data/FlowERrs_val.txt}
-export TEST_FILE=${TEST_FILE:-/home/ptim/orcd/scratch/data/FlowERrs_test.txt}
-#export TEST_FILE=${TEST_FILE:-/home/ptim/orcd/scratch/data/FlowERrs_test_5k_random.txt}
+#export TEST_FILE=${TEST_FILE:-/home/ptim/orcd/scratch/data/FlowERrs_test.txt}
+export TEST_FILE=${TEST_FILE:-/home/ptim/orcd/scratch/data/FlowERrs_test_5k_random.txt}
 # export TEST_FILE=${TEST_FILE:-/home/ptim/FlowER/FlowERrs/data/$DATA_NAME/beam.txt}
 
 
