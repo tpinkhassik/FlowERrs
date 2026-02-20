@@ -221,37 +221,40 @@ def main(args):
             step_weights = train_batch.step_weights.float()
             
 
-            x0_sample = flow.sample_be_matrix(x0)
-            cv0_delta = torch.zeros_like(cv1)
-            cv0_delta = torch.where(node_masks.bool(), cv0_delta, cv1)
-            cv0_sample = flow.sample_chiral_vec(cv0_delta)
+            with torch.autocast(
+                device_type="cuda",
+                dtype=torch.bfloat16,
+                enabled=(args.use_bf16 and device.type == "cuda"),
+            ):
+                x0_sample = flow.sample_be_matrix(x0)
+                cv0_delta = torch.zeros_like(cv1)
+                cv0_delta = torch.where(node_masks.bool(), cv0_delta, cv1)
+                cv0_sample = flow.sample_chiral_vec(cv0_delta)
 
-            t = torch.rand(x0.shape[0]).type_as(x0)
-            
+                t = torch.rand(x0.shape[0]).type_as(x0)
 
-            xt, cvt = flow.sample_conditional_pt(x0, x1, cv0_delta, cv1, t)
-            ut = flow.compute_conditional_vector_field(x0_sample, x1)
-            u_cvt = flow.compute_conditional_vector_field(cv0_sample, cv1)
+                xt, cvt = flow.sample_conditional_pt(x0, x1, cv0_delta, cv1, t)
+                ut = flow.compute_conditional_vector_field(x0_sample, x1)
+                u_cvt = flow.compute_conditional_vector_field(cv0_sample, cv1)
 
-            # if hasattr(model, "module"):
-            #     model = model.module        # unwrap DDP attn_model to enable accessing attn_model func directly
+                # if hasattr(model, "module"):
+                #     model = model.module        # unwrap DDP attn_model to enable accessing attn_model func directly
 
-            # Keep DDP wrapper for forward/backward; only use underlying module for helper methods.
-            model_for_emb = model.module if hasattr(model, "module") else model
-            # y_emb = model.id2emb(y)
-            y_emb = model_for_emb.id2emb(y)
-            vt, v_cvt = model(y_emb, y_len, xt, t, cvt)
+                # Keep DDP wrapper for forward/backward; only use underlying module for helper methods.
+                model_for_emb = model.module if hasattr(model, "module") else model
+                # y_emb = model.id2emb(y)
+                y_emb = model_for_emb.id2emb(y)
+                vt, v_cvt = model(y_emb, y_len, xt, t, cvt)
 
-            
-            be_err2 = ((vt - ut) * matrix_masks) ** 2
-            cv_err2 = ((v_cvt - u_cvt) * node_masks) ** 2
+                be_err2 = ((vt - ut) * matrix_masks) ** 2
+                cv_err2 = ((v_cvt - u_cvt) * node_masks) ** 2
 
-            weight_denom = step_weights.sum().clamp_min(1e-12)
-            be_loss = torch.sum(be_err2 * step_weights[:, None, None]) / weight_denom
-            cv_loss = torch.sum(cv_err2 * step_weights[:, None]) / weight_denom
+                weight_denom = step_weights.sum().clamp_min(1e-12)
+                be_loss = torch.sum(be_err2 * step_weights[:, None, None]) / weight_denom
+                cv_loss = torch.sum(cv_err2 * step_weights[:, None]) / weight_denom
 
-            #TODO: Implement FAMO or Bloop or the like to do multiobjective learning.
-            loss = be_loss + cv_loss
+                #TODO: Implement FAMO or Bloop or the like to do multiobjective learning.
+                loss = be_loss + cv_loss
 
             (loss / args.accumulation_count).backward()
             be_loss_value = be_loss.item()

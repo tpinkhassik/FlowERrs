@@ -17,6 +17,7 @@ TEST_BATCH_SIZE = int(os.environ.get("TEST_BATCH_SIZE", 512 * NUM_GPU * SCALE))
 NUM_NODES = int(os.environ.get("NUM_NODES", 1))
 ACCUMULATION_COUNT = int(os.environ.get("ACCUMULATION_COUNT", 1))
 NUM_WORKERS = int(os.environ.get("NUM_WORKERS", 16))
+USE_BF16 = int(os.environ.get("USE_BF16", 1))
 
 MODEL_NAME = os.environ.get("MODEL_NAME")
 
@@ -47,6 +48,7 @@ class Args:
     rel_pos = "emb_only"
     shared_attention_layer = 0
     sigma = float(os.environ.get("SIGMA"))
+    use_bf16 = bool(USE_BF16)
     train_batch_size = (TRAIN_BATCH_SIZE / ACCUMULATION_COUNT / NUM_GPU / NUM_NODES)
     val_batch_size = (VAL_BATCH_SIZE / ACCUMULATION_COUNT / NUM_GPU / NUM_NODES)
     test_batch_size = TEST_BATCH_SIZE

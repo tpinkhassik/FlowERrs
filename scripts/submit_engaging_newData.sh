@@ -3,7 +3,7 @@
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ptim@mit.edu
 #SBATCH -p mit_preemptable
-#SBATCH -G h200:2
+#SBATCH -G h100:2
 #SBATCH -N 1
 #SBATCH -n 16
 #SBATCH --exclude=node2507,node2510
