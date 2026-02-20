@@ -270,6 +270,10 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
 
                     correct_cv = 0
                     correct_centers = false_positives = false_negatives = 0
+                    # Chiral-only center metrics (exclude achiral/zero targets).
+                    correct_chiral_centers = 0
+                    total_chiral_centers = 0
+                    wrong_sign_chiral = 0
 
 
 
@@ -332,7 +336,10 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
                         tgt_chiral_vec = np.clip(reac_chiral_vec + tgt_delta_chiral_vec, -1, 1)
                         assert pred_prod_chiral_vec.shape == reac_chiral_vec.shape, "pred and react cv not the same shape"
 
-                        correct_centers += count *(pred_prod_chiral_vec == tgt_chiral_vec).sum()
+                        correct_centers += count * (pred_prod_chiral_vec == tgt_chiral_vec).sum()
+                        tgt_is_chiral = (tgt_chiral_vec != 0)
+                        total_chiral_centers += count * tgt_is_chiral.sum()
+                        correct_chiral_centers += count * (pred_prod_chiral_vec[tgt_is_chiral] == tgt_chiral_vec[tgt_is_chiral]).sum()
 
                         if np.array_equal(pred_prod_chiral_vec, tgt_chiral_vec):
                             correct_cv += count
@@ -343,8 +350,15 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
 
                             # Count how many centers were missed
                             false_negatives += count * (pred_prod_chiral_vec[tgt_chiral_vec != 0] == 0).sum()
+                            wrong_sign_chiral += count * (
+                                (pred_prod_chiral_vec[tgt_is_chiral] != 0)
+                                & (pred_prod_chiral_vec[tgt_is_chiral] != tgt_chiral_vec[tgt_is_chiral])
+                            ).sum()
 
-                    
+                    chiral_center_acc = (
+                        float(correct_chiral_centers) / float(total_chiral_centers)
+                        if total_chiral_centers > 0 else float("nan")
+                    )
 
                     metric = [
                         correct, 
@@ -355,7 +369,11 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
                         correct_cv,
                         correct_centers,
                         false_positives,
-                        false_negatives]
+                        false_negatives,
+                        correct_chiral_centers,
+                        total_chiral_centers,
+                        wrong_sign_chiral,
+                        chiral_center_acc]
                     
                     # Not changing this right now because it is nontrivial to put the chiral vectors back into SMILES.
                     # Will need to rewrite the loop so that the molecules are reunited with their chiralities before we
@@ -397,7 +415,7 @@ def main(args):
     for ckpt_i, checkpoint in enumerate(checkpoints):
         state = torch.load(checkpoint, weights_only=False, map_location=device)
         pretrain_args = state["args"]
-        pretrain_args.load_from = None
+        pretrain_args.load_from = checkpoint
         pretrain_args.device = device
         
         pretrain_state_dict = state["state_dict"]
