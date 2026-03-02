@@ -83,6 +83,10 @@ def standardize_smiles(mol):
     [a.SetAtomMapNum(0) for a in mol.GetAtoms()]
     return Chem.MolToSmiles(mol, isomericSmiles=False, allHsExplicit=True)
 
+def standardize_smiles_chiral(mol):
+    [a.SetAtomMapNum(0) for a in mol.GetAtoms()]
+    return Chem.MolToSmiles(mol, isomericSmiles=True, allHsExplicit=True)
+
 def split_number(number, num_parts):
     if number % num_parts != 0:
         raise ValueError("The number cannot be evenly divided into the specified number of parts.")
@@ -141,14 +145,13 @@ def predict_batch(args, batch_idx, data_batch, model, flow, split, rand_matrix=N
             v_be, v_cv = model.forward(y_emb_repeated, y_len_batch_repeated, x, t, cv)
             return (v_be, v_cv)
 
-        traj_be, traj_cv = torchdiffeq.odeint_adjoint(
+        traj_be, traj_cv = torchdiffeq.odeint(
             velocity,
             (x0_sample_repeated, cv0_sample_repeated),
             torch.linspace(0, 1, 2).to(args.device),
             atol=1e-4,
             rtol=1e-4,
             method="dopri5",
-            adjoint_params=()
         )
         big_traj_list.append((
             traj_be.transpose(0, 1).detach().cpu(),
@@ -256,103 +259,99 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
                     prod_mol = Chem.MolFromSmiles(product_smi, ps)
 
                     tgt_smiles = standardize_smiles(prod_mol)
+                    # atom maps cleared in-place by standardize_smiles; stereo preserved
+                    tgt_chiral_smi = Chem.MolToSmiles(prod_mol, isomericSmiles=True, allHsExplicit=True)
 
-                    matrices, counts = torch.unique(product_BE_matrices, dim=0, return_counts=True)
-                    matrices, counts = matrices.cpu().numpy(), counts.cpu().numpy()
+                    num_nodes = int(y_len[idx])
+                    reac_be_matrix = x0[idx][:num_nodes, :num_nodes].detach().cpu().numpy()
+                    reac_chiral_vec = cv0[idx][:num_nodes].detach().cpu().numpy()
+                    tgt_delta_chiral_vec = tgt_chiral_vecs[:num_nodes].cpu().numpy()
+                    tgt_chiral_vec = np.clip(reac_chiral_vec + tgt_delta_chiral_vec, -1, 1)
+                    tgt_is_chiral = (tgt_chiral_vec != 0)
+                    # centers where chirality changed AND remain chiral in the product
+                    tgt_changed_is_chiral = (tgt_delta_chiral_vec != 0) & tgt_is_chiral
 
-                    chiral_vecs, cv_counts = torch.unique(product_chiral_vecs, dim=0, return_counts=True)
-                    chiral_vecs, cv_counts = chiral_vecs.cpu().numpy(), cv_counts.cpu().numpy()
+                    # Unique on joint (BE matrix, chiral vector) pairs to preserve pairing
+                    n_pad = product_BE_matrices.shape[1]
+                    flat_pairs = torch.cat([
+                        product_BE_matrices.view(args.sample_size, -1).float(),
+                        product_chiral_vecs.float(),
+                    ], dim=1)
+                    pairs, pair_counts = torch.unique(flat_pairs, dim=0, return_counts=True)
+                    pairs, pair_counts = pairs.cpu().numpy(), pair_counts.cpu().numpy()
 
                     not_sym = 0
-
                     correct = wrong_smi_conserved = wrong_smi_non_conserved = 0
                     no_smi_conserved = no_smi_non_conserved = 0
-
                     correct_cv = 0
                     correct_centers = false_positives = false_negatives = 0
-                    # Chiral-only center metrics (exclude achiral/zero targets).
                     correct_chiral_centers = 0
                     total_chiral_centers = 0
                     wrong_sign_chiral = 0
+                    correct_changed_chiral_centers = 0
+                    total_changed_chiral_centers = 0
+                    pred_chiral_smi_dict = defaultdict(int)
 
+                    for i in range(pairs.shape[0]):
+                        pair, count = pairs[i], pair_counts[i]
+                        pred_be = pair[:n_pad * n_pad].reshape(n_pad, n_pad)[:num_nodes, :num_nodes]
+                        pred_cv = pair[n_pad * n_pad:][:num_nodes]
 
+                        pred_be = redist_fix(pred_be, reac_smi, reac_be_matrix)
 
-                    pred_smi_dict = defaultdict(int)
-                    pred_conserved_dict = defaultdict(bool)
+                        assert pred_be.shape == reac_be_matrix.shape, "pred and reac not the same shape"
 
-                    pred_cv_dict = defaultdict(int)
-                
-                    # TODO: Evaluate on unique BE matrix/chiral vec pair?  What does it really mean for the 'product'
-                    # to have correct chirality but wrong bonding?  That would not make much sense to me
-
-                    # Evaluation on unique predicted BE matrices
-                    for i in range(matrices.shape[0]):
-                        pred_prod_be_matrix, count = matrices[i], counts[i] # predicted product matrix and it's count
-                        num_nodes = y_len[idx]
-                        pred_prod_be_matrix = pred_prod_be_matrix[:num_nodes, :num_nodes]
-                        reac_be_matrix = x0[idx][:num_nodes, :num_nodes].detach().cpu().numpy()
-
-                        # print(f"Matrix{i} - {count}")
-                        pred_prod_be_matrix = redist_fix(pred_prod_be_matrix, reac_smi, reac_be_matrix)
-
-                        assert pred_prod_be_matrix.shape == reac_be_matrix.shape, "pred and reac not the same shape"
-                        
-                        if not is_sym(pred_prod_be_matrix):
+                        if not is_sym(pred_be):
                             not_sym += 1
 
+                        # Bonding evaluation
                         try:
-                            pred_mol = BEmatrix_to_mol(reac_mol, pred_prod_be_matrix)
-                            pred_smi = standardize_smiles(pred_mol)
+                            pred_mol = BEmatrix_to_mol(reac_mol, pred_be)
 
+                            # Apply chirality before standardize_smiles clears atom maps in-place
+                            try:
+                                pred_mol_chiral = chiral_vec_to_mol(pred_mol, pred_cv)
+                                pred_smi_mapped = Chem.MolToSmiles(pred_mol_chiral, isomericSmiles=True, allHsExplicit=True)
+                                pred_mol_chiral = Chem.MolFromSmiles(pred_smi_mapped, ps)
+                                pred_chiral_smi_dict[standardize_smiles_chiral(pred_mol_chiral)] += count
+                            except Exception:
+                                pass
+
+                            pred_smi = standardize_smiles(pred_mol)
                             pred_mol = Chem.MolFromSmiles(pred_smi, ps)
                             pred_smi = standardize_smiles(pred_mol)
                             tgt_mol = Chem.MolFromSmiles(tgt_smiles, ps)
                             tgt_smiles = standardize_smiles(tgt_mol)
 
-
-                            if pred_smi == tgt_smiles and pred_prod_be_matrix.sum() == reac_be_matrix.sum():
+                            if pred_smi == tgt_smiles and pred_be.sum() == reac_be_matrix.sum():
                                 correct += count
-                                pred_smi_dict[pred_smi] += count
-                                pred_conserved_dict[pred_smi] = True
-                            elif pred_prod_be_matrix.sum() == reac_be_matrix.sum(): # conserve electron, gives wrong smiles
+                            elif pred_be.sum() == reac_be_matrix.sum():
                                 wrong_smi_conserved += count
-                                pred_smi_dict[pred_smi] += count
-                                pred_conserved_dict[pred_smi] = True
-                            else: # Gives SMILES but does not conserve electron
-                                wrong_smi_non_conserved += count           ########### This is added metric
+                            else:
+                                wrong_smi_non_conserved += count
                         except:
-                            if pred_prod_be_matrix.sum() == reac_be_matrix.sum():
+                            if pred_be.sum() == reac_be_matrix.sum():
                                 no_smi_conserved += count
                             else:
                                 no_smi_non_conserved += count
-                    
-                    # New: check on the chiral vectors
-                    for i in range(chiral_vecs.shape[0]):
-                        pred_prod_chiral_vec, count = chiral_vecs[i], cv_counts[i]
-                        num_nodes = y_len[idx]
-                        pred_prod_chiral_vec = pred_prod_chiral_vec[:num_nodes]
-                        reac_chiral_vec = cv0[idx][:num_nodes].detach().cpu().numpy()
-                        tgt_delta_chiral_vec = tgt_chiral_vecs[:num_nodes].cpu().numpy()
-                        tgt_chiral_vec = np.clip(reac_chiral_vec + tgt_delta_chiral_vec, -1, 1)
-                        assert pred_prod_chiral_vec.shape == reac_chiral_vec.shape, "pred and react cv not the same shape"
 
-                        correct_centers += count * (pred_prod_chiral_vec == tgt_chiral_vec).sum()
-                        tgt_is_chiral = (tgt_chiral_vec != 0)
+                        # Chiral vector evaluation
+                        correct_centers += count * (pred_cv == tgt_chiral_vec).sum()
                         total_chiral_centers += count * tgt_is_chiral.sum()
-                        correct_chiral_centers += count * (pred_prod_chiral_vec[tgt_is_chiral] == tgt_chiral_vec[tgt_is_chiral]).sum()
+                        correct_chiral_centers += count * (pred_cv[tgt_is_chiral] == tgt_chiral_vec[tgt_is_chiral]).sum()
 
-                        if np.array_equal(pred_prod_chiral_vec, tgt_chiral_vec):
+                        # Changed-center evaluation (inversion / creation)
+                        total_changed_chiral_centers += count * tgt_changed_is_chiral.sum()
+                        correct_changed_chiral_centers += count * (pred_cv[tgt_changed_is_chiral] == tgt_chiral_vec[tgt_changed_is_chiral]).sum()
+
+                        if np.array_equal(pred_cv, tgt_chiral_vec):
                             correct_cv += count
-                            pred_cv_dict[tuple(node for node in pred_prod_chiral_vec.tolist())] += count
                         else:
-                            # Count how many centers were set when they shouldn't have been
-                            false_positives += count * (pred_prod_chiral_vec[tgt_chiral_vec == 0] != 0).sum()
-
-                            # Count how many centers were missed
-                            false_negatives += count * (pred_prod_chiral_vec[tgt_chiral_vec != 0] == 0).sum()
+                            false_positives += count * (pred_cv[tgt_chiral_vec == 0] != 0).sum()
+                            false_negatives += count * (pred_cv[tgt_chiral_vec != 0] == 0).sum()
                             wrong_sign_chiral += count * (
-                                (pred_prod_chiral_vec[tgt_is_chiral] != 0)
-                                & (pred_prod_chiral_vec[tgt_is_chiral] != tgt_chiral_vec[tgt_is_chiral])
+                                (pred_cv[tgt_is_chiral] != 0)
+                                & (pred_cv[tgt_is_chiral] != tgt_chiral_vec[tgt_is_chiral])
                             ).sum()
 
                     chiral_center_acc = (
@@ -360,27 +359,30 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
                         if total_chiral_centers > 0 else float("nan")
                     )
 
-                    metric = [
-                        correct, 
-                        wrong_smi_conserved, 
-                        wrong_smi_non_conserved, 
-                        no_smi_conserved, 
-                        no_smi_non_conserved,
-                        correct_cv,
-                        correct_centers,
-                        false_positives,
-                        false_negatives,
-                        correct_chiral_centers,
-                        total_chiral_centers,
-                        wrong_sign_chiral,
-                        chiral_center_acc]
-                    
-                    # Not changing this right now because it is nontrivial to put the chiral vectors back into SMILES.
-                    # Will need to rewrite the loop so that the molecules are reunited with their chiralities before we
-                    # generate SMILES from the BE matrices.
+                    correct_chiral_smi = pred_chiral_smi_dict.get(tgt_chiral_smi, 0)
 
-                    predictions = [(smi, pred_smi_dict[smi], pred_conserved_dict[smi]) for smi in pred_smi_dict]
-                    if write_o is not None: 
+                    metric = [
+                        correct,                          # 0
+                        wrong_smi_conserved,              # 1
+                        wrong_smi_non_conserved,          # 2
+                        no_smi_conserved,                 # 3
+                        no_smi_non_conserved,             # 4
+                        correct_cv,                       # 5
+                        correct_centers,                  # 6
+                        false_positives,                  # 7
+                        false_negatives,                  # 8
+                        correct_chiral_centers,           # 9
+                        total_chiral_centers,             # 10
+                        wrong_sign_chiral,                # 11
+                        chiral_center_acc,                # 12
+                        correct_changed_chiral_centers,   # 13
+                        total_changed_chiral_centers,     # 14
+                        0,                                # 15 (reserved)
+                        correct_chiral_smi,               # 16
+                    ]
+
+                    predictions = [(smi, pred_chiral_smi_dict[smi]) for smi in pred_chiral_smi_dict]
+                    if write_o is not None:
                         write_o.write(f"{metric}|{not_sym}|{predictions}\n")
                         write_o.flush()
                     accuracy.append(metric)

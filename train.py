@@ -233,13 +233,10 @@ def main(args):
             ut = flow.compute_conditional_vector_field(x0_sample, x1)
             u_cvt = flow.compute_conditional_vector_field(cv0_sample, cv1)
 
-            # if hasattr(model, "module"):
-            #     model = model.module        # unwrap DDP attn_model to enable accessing attn_model func directly
+            if hasattr(model, "module"):
+                model = model.module        # unwrap DDP attn_model to enable accessing attn_model func directly
 
-            # Keep DDP wrapper for forward/backward; only use underlying module for helper methods.
-            model_for_emb = model.module if hasattr(model, "module") else model
-            # y_emb = model.id2emb(y)
-            y_emb = model_for_emb.id2emb(y)
+            y_emb = model.id2emb(y)
             vt, v_cvt = model(y_emb, y_len, xt, t, cvt)
 
             
@@ -291,49 +288,43 @@ def main(args):
                     log_rank_0(f"Topk accuracies: {(topk_accuracies * 100): .2f}")
                 model.train()
 
-            should_save_boundary = (accum == 0) and (total_step > 0) and (total_step % args.save_iter == 0)
-
             # Important: saving only at one node or the ckpt would be corrupted!
-            # if dist.is_initialized() and dist.get_rank() > 0:
-            #     continue
+            if dist.is_initialized() and dist.get_rank() > 0:
+                continue
 
-            # if (accum == 0) and (total_step > 0) and (total_step % args.save_iter == 0):
-            if should_save_boundary:
-                is_rank0 = (not dist.is_initialized()) or (dist.get_rank() == 0)
-                if is_rank0:
-                    n_iter = total_step // args.save_iter - 1
-                    mean_total_loss = float(np.mean(ckpt_total_losses)) if ckpt_total_losses else float("nan")
-                    mean_be_loss = float(np.mean(ckpt_be_losses)) if ckpt_be_losses else float("nan")
-                    mean_cv_loss = float(np.mean(ckpt_cv_losses)) if ckpt_cv_losses else float("nan")
-                    if (len(loss_history["step"]) == 0) or (loss_history["step"][-1] != int(total_step)):
-                        loss_history["step"].append(int(total_step))
-                        loss_history["total_loss"].append(mean_total_loss)
-                        loss_history["be_loss"].append(mean_be_loss)
-                        loss_history["cv_loss"].append(mean_cv_loss)
-                        with open(loss_history_path, "a") as history_o:
-                            history_o.write(
-                                f"{total_step},{mean_total_loss:.8f},{mean_be_loss:.8f},{mean_cv_loss:.8f}\n"
-                            )
-                    log_rank_0(f"Saving at step {total_step}")
-                    if scheduler is not None:
-                        state = {
-                            "args": args,
-                            "total_step": total_step,
-                            "state_dict": model.state_dict(),
-                            "optimizer": optimizer.state_dict(),
-                            "scheduler": scheduler.state_dict(),
-                            "loss_history": loss_history
-                        }
-                    else:
-                        state = {
-                            "args": args,
-                            "total_step": total_step,
-                            "state_dict": model.state_dict(),
-                            "optimizer": optimizer.state_dict(),
-                            "loss_history": loss_history
-                        }
-                    torch.save(state, os.path.join(args.model_path, f"model.{total_step}_{n_iter}.pt"))
-                # ckpt_total_losses, ckpt_be_losses, ckpt_cv_losses = [], [], []
+            if (accum == 0) and (total_step > 0) and (total_step % args.save_iter == 0):
+                n_iter = total_step // args.save_iter - 1
+                mean_total_loss = float(np.mean(ckpt_total_losses)) if ckpt_total_losses else float("nan")
+                mean_be_loss = float(np.mean(ckpt_be_losses)) if ckpt_be_losses else float("nan")
+                mean_cv_loss = float(np.mean(ckpt_cv_losses)) if ckpt_cv_losses else float("nan")
+                if (len(loss_history["step"]) == 0) or (loss_history["step"][-1] != int(total_step)):
+                    loss_history["step"].append(int(total_step))
+                    loss_history["total_loss"].append(mean_total_loss)
+                    loss_history["be_loss"].append(mean_be_loss)
+                    loss_history["cv_loss"].append(mean_cv_loss)
+                    with open(loss_history_path, "a") as history_o:
+                        history_o.write(
+                            f"{total_step},{mean_total_loss:.8f},{mean_be_loss:.8f},{mean_cv_loss:.8f}\n"
+                        )
+                log_rank_0(f"Saving at step {total_step}")
+                if scheduler is not None:
+                    state = {
+                        "args": args,
+                        "total_step": total_step,
+                        "state_dict": model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "scheduler": scheduler.state_dict(),
+                        "loss_history": loss_history
+                    }
+                else:
+                    state = {
+                        "args": args,
+                        "total_step": total_step,
+                        "state_dict": model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "loss_history": loss_history
+                    }
+                torch.save(state, os.path.join(args.model_path, f"model.{total_step}_{n_iter}.pt"))
                 ckpt_total_losses, ckpt_be_losses, ckpt_cv_losses = [], [], []
 
         # lastly

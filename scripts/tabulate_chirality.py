@@ -48,7 +48,7 @@ def main():
     ap.add_argument(
         "result_file",
         nargs="?",
-        default="/home/ptim/orcd/scratch/FlowERrs_results/flower_new_dataset/mit_normal_gpu_chi_test/test-*.txt",
+        default="/home/ptim/orcd/scratch/FlowERrs_results/flower_new_dataset/mit_normal_gpu_chi_test/mit_preemptable/quicktest/tmp/test-*.txt",
         help="Result file or glob pattern (default: latest test-*.txt for current experiment)",
     )
     args = ap.parse_args()
@@ -71,6 +71,14 @@ def main():
     sum_total_chiral = 0
     sum_wrong_sign = 0
     rows_with_chiral_targets = 0
+
+    # Changed-center metrics (centers where delta != 0 AND present in final product)
+    sum_correct_changed_chiral = 0
+    sum_total_changed_chiral = 0
+    rows_with_changed_chiral = 0
+
+    # Chiral SMILES: exact match including stereochemistry
+    sum_correct_chiral_smi = 0
 
     with open(result_file, "r") as f:
         for line in f:
@@ -100,6 +108,17 @@ def main():
                 sum_wrong_sign += w
                 if t > 0:
                     rows_with_chiral_targets += 1
+
+            if len(row) >= 16:
+                cc = int(row[13])
+                tc = int(row[14])
+                sum_correct_changed_chiral += cc
+                sum_total_changed_chiral += tc
+                if tc > 0:
+                    rows_with_changed_chiral += 1
+
+            if len(row) >= 17:
+                sum_correct_chiral_smi += int(row[16])
 
     if n == 0:
         print(f"No parseable metric rows found in: {result_file}")
@@ -147,6 +166,22 @@ def main():
         print()
         print("chirality (chiral-only centers)")
         print("  no target chiral centers found in this file")
+
+    if sum_total_changed_chiral > 0:
+        print()
+        print("chirality (changed centers in final product)")
+        print(f"  reactions with changed chiral centers: {rows_with_changed_chiral}/{n}")
+        print(f"  correct_changed_chiral_centers: {sum_correct_changed_chiral}")
+        print(f"  total_changed_chiral_centers:   {sum_total_changed_chiral}")
+        print(f"  changed_chiral_center_acc:      {sum_correct_changed_chiral}/{sum_total_changed_chiral} = {pct(sum_correct_changed_chiral, sum_total_changed_chiral):.2f}%")
+    else:
+        print()
+        print("chirality (changed centers in final product)")
+        print("  no changed chiral centers found in this file")
+
+    print()
+    print("chiral SMILES accuracy (connectivity + stereo must both be correct)")
+    print(f"  correct_chiral_smi: {sum_correct_chiral_smi}/{total_samples} = {pct(sum_correct_chiral_smi, total_samples):.2f}%")
 
 
 if __name__ == "__main__":
