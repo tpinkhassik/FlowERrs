@@ -1,0 +1,8 @@
+--index-url https://download.pytorch.org/whl/rocm7.1
+torch==2.10.0
+numpy==1.26.4
+torchdiffeq==0.2.4
+rdkit==2024.3.3
+iteround==1.0.4
+networkx==3.3
+matplotlib==3.9.1
