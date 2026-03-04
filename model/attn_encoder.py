@@ -41,15 +41,15 @@ class RBFExpansion(nn.Module):
         """
         super().__init__()
         self.args = args
-        self.device = args.device
         self.low = args.rbf_low
         self.high = args.rbf_high
         self.gap = args.rbf_gap
 
         self.xrange = self.high - self.low
-        
-        self.centers = torch.linspace(self.low, self.high, 
-            int(torch.ceil(torch.tensor(self.xrange / self.gap)))).to(self.device)
+
+        centers = torch.linspace(self.low, self.high,
+            int(torch.ceil(torch.tensor(self.xrange / self.gap))))
+        self.register_buffer('centers', centers)
         self.dim = len(self.centers)
 
     def forward(self, matrix, matrix_mask):
@@ -227,7 +227,6 @@ class AttnEncoderXL(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
-        self.device = args.device
         self.num_layers = args.enc_num_layers
         self.post_processing_layers = args.post_processing_layers
         self.d_model = args.emb_dim

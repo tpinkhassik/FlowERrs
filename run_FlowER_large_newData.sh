@@ -47,6 +47,7 @@ export MODEL_PATH=/home/ptim/orcd/scratch/FlowERrs_checkpoints/$DATA_NAME/$EXP_N
 
 export SCALE=4 # smaller sample size during training validation
 sh /home/ptim/FlowER/FlowERrs/scripts/train.sh
+# sh scripts/train_lightning.sh
 
 #export SCALE=1 # larger sample size during testing
 

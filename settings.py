@@ -66,6 +66,7 @@ class Args:
     save_iter = int(os.environ.get("SAVE_ITER", 30000))
     log_iter = int(os.environ.get("LOG_ITER", 100))
     eval_iter = int(os.environ.get("EVAL_ITER", 30000))
+    val_count = int(os.environ.get("VAL_COUNT", 50))
 
 
     sample_size = SAMPLE_SIZE

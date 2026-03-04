@@ -28,12 +28,11 @@ class ConditionalFlowMatcher(nn.Module):
         """
         super().__init__()
         self.args = args
-        self.device = args.device
         self.sigma = args.sigma
         self.dim = args.emb_dim
 
     def zero_centered_noise(self, size, node_mask_batch):
-        rand = torch.randn(size).to(self.device)
+        rand = torch.randn(size, device=node_mask_batch.device)
         x_batch = rand * node_mask_batch
         map_zero_center = torch.vmap(zero_center_func) # map on multiple batch
         return map_zero_center(x_batch, node_mask_batch).masked_fill(~(node_mask_batch.bool()), 1e-19)
