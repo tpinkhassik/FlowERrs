@@ -44,5 +44,7 @@ sh scripts/train.sh
 
 export SCALE=1 # larger sample size during testing
 # sh scripts/eval_multiGPU.sh
+# sh scripts/eval_diverse_multiGPU.sh  # DiverseFlow (DPP-coupled sampling)
 # sh scripts/search.sh
 # sh scripts/search_multiGPU.sh
+# sh scripts/search_diverse_multiGPU.sh  # DiverseFlow beam search

@@ -88,5 +88,10 @@ class Args:
     max_depth = 15
     chunk_size = 50
 
+    # DiverseFlow (DPP-coupled sampling) #
+    diverse_gamma = float(os.environ.get("DIVERSE_GAMMA", 5.0))
+    diverse_num_steps = int(os.environ.get("DIVERSE_NUM_STEPS", 20))
+
     # chirality #
+    use_chirality = os.environ.get("USE_CHIRALITY", "1").lower() in ("1", "true", "yes")
     strip_spurious_stereo = True

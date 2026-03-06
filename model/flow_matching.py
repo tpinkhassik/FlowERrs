@@ -94,8 +94,12 @@ class ConditionalFlowMatcher(nn.Module):
         #cvmu_t = tcv * cv1 + (1 - tcv) * cv0
         #return self.sample_be_matrix(bemu_t), self.sample_chiral_vec(cvmu_t)
 
+    def sample_conditional_pt_be_only(self, be0, be1, t):
+        """Sample conditional probability path for BE matrices only (no chirality)."""
+        tbe = t.reshape(-1, *([1] * (be0.dim() - 1)))
+        bemu_t = tbe * be1 + (1 - tbe) * be0
+        return self.sample_be_matrix(bemu_t), None
 
-    
     def compute_conditional_vector_field(self, x0, x1):
         """
         Compute the conditional vector field ut(x1|x0) = x1 - x0, see Eq.(15) [1].

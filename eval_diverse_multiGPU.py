@@ -1,3 +1,9 @@
+"""
+Diverse evaluation script using DPP-coupled ODE integration (DiverseFlow).
+
+Drop-in replacement for eval_multiGPU.py that couples K samples per reaction
+via a DPP repulsive term during ODE integration, promoting diverse predictions.
+"""
 
 import os
 import glob
@@ -5,7 +11,6 @@ import datetime
 import torch
 import numpy as np
 from rdkit import Chem
-import torchdiffeq
 from utils.data_utils import ReactionDataset, BEmatrix_to_mol, chiral_vec_to_mol, ps
 from utils.rounding import saferound_tensor
 import torch.distributed as dist
@@ -14,189 +19,127 @@ from utils.train_utils import log_rank_0, setup_logger, log_args
 from settings import Args
 from collections import defaultdict
 import time
-import iteround
+
+from model.diverse_flow import diverse_ode_integrate
+from eval_multiGPU import (
+    is_sym, redist_fix, redistribute_round, custom_round,
+    chiral_delta_round, chiral_round,
+    standardize_smiles, standardize_smiles_chiral, split_number,
+)
 
 ps = Chem.SmilesParserParams()
 ps.removeHs = False
 ps.sanitize = True
 
-def is_sym(a):
-    return (a.transpose(1, 0) == a).all()
-
-def redist_fix(pred_matrix, reac_smi, reac_be_matrix):
-    pred_electron_sum = np.zeros([len(pred_matrix)])
-    for i in range(len(pred_matrix)):
-        pred_electron_sum[i] = \
-        np.sum(pred_matrix[i, :]) + np.sum(pred_matrix[:, i]) - pred_matrix[i, i]
-
-    reac_electron_sum = np.zeros([len(reac_be_matrix)])
-    for i in range(len(reac_be_matrix)):
-        reac_electron_sum[i] = \
-        np.sum(reac_be_matrix[i, :]) + np.sum(reac_be_matrix[:, i]) - reac_be_matrix[i, i]
-
-    diff = reac_electron_sum - pred_electron_sum
-
-    if np.sum(diff) == 0:
-        pred_matrix[np.diag_indices_from(pred_matrix)] += diff
-
-    return pred_matrix
-
-# # old implementation uses CPU
-# def redistribute_round(x):
-#     rounded_diff = iteround.saferound(x.flatten().cpu().numpy().tolist(), 0)
-#     rounded_diff = torch.as_tensor(rounded_diff, dtype=torch.float).view(*x.shape)
-#     return rounded_diff.to(x)
-
-# new implementation uses GPU
-def redistribute_round(x):
-    rounded = saferound_tensor(x, places=0, strategy="difference")
-    return rounded
-
-def custom_round(x):
-    output = []
-    for i in range(x.shape[0]):
-        try: output.append(redistribute_round(x[i]))
-        except: output.append(torch.round(x[i]))
-    return torch.stack(output)
-
-def chiral_delta_round(x: torch.Tensor) -> torch.Tensor:
-    """
-    Round a predicted chirality delta, bounded to be within -2 and +2.
-    Args: x (torch.Tensor): input delta-chirality output
-    Returns: torch.Tensor: rounded tensor with elements in {-2, -1, 0, +1, +2}
-    """
-    return torch.clamp(torch.round(x), min=-2, max=2)
-
-def chiral_round(x: torch.Tensor) -> torch.Tensor:
-    """
-    Round a chiral vector, bounded to be within -1 and +1.
-    Args: x (torch.Tensor): input absolute chiral vector output
-    Returns: torch.Tensor: rounded tensor with elements in {-1, 0, +1}
-    """
-    return torch.clamp(torch.round(x), min=-1, max=1)
-
-
-
-
-
-def standardize_smiles(mol):
-    [a.SetAtomMapNum(0) for a in mol.GetAtoms()]
-    return Chem.MolToSmiles(mol, isomericSmiles=False, allHsExplicit=True)
-
-def standardize_smiles_chiral(mol):
-    [a.SetAtomMapNum(0) for a in mol.GetAtoms()]
-    return Chem.MolToSmiles(mol, isomericSmiles=True, allHsExplicit=True)
-
-def split_number(number, num_parts):
-    if number % num_parts != 0:
-        raise ValueError("The number cannot be evenly divided into the specified number of parts.")
-    return [number // num_parts] * num_parts
-
 start = time.time()
-def predict_batch(args, batch_idx, data_batch, model, flow, split, rand_matrix=None):
+
+
+def predict_batch_diverse(args, batch_idx, data_batch, model, flow, split):
+    """Predict using DPP-coupled diverse ODE integration.
+
+    Unlike standard eval, all K samples per reaction MUST be in the same batch
+    for DPP coupling to work. When split > 1, we split across reactions (not
+    across samples), processing fewer reactions at a time but keeping all K
+    samples per reaction together.
+    """
     src_data_indices = data_batch.src_data_indices
     y = data_batch.src_token_ids
     y_len = data_batch.src_lens
     x0 = data_batch.src_matrices
     cv0 = data_batch.src_chiral_vecs
-    # x1 = data_batch.tgt_matrices
-    # cv1 = data_batch.tgt_chiral_vecs
     matrix_masks = data_batch.matrix_masks
     node_masks = data_batch.node_masks
-    cv0_delta = torch.zeros_like(cv0)
-    cv0_delta = torch.where(node_masks.bool(), cv0_delta, cv0)
-
-    batch_size, n, n = x0.shape
-    
-    log_rank_0(f"Batch idx: {batch_idx}, batch_shape {batch_size, n, n} {(time.time() - start): .2f}s")
-    # --------ODE inference--------------#
-    SAMPLE_BATCH = args.sample_size
-    # split_sample_batches = split_number(SAMPLE_BATCH, 2) if n >= 400 else split_number(SAMPLE_BATCH, 1)
-    # split_sample_batches = split_number(SAMPLE_BATCH, 1)
-    split_sample_batches = split_number(SAMPLE_BATCH, split)
-    
     use_chirality = getattr(model, 'use_chirality', True)
 
-    big_traj_list = []
-    for sample_size in split_sample_batches:
-        src_data_indices = src_data_indices.repeat_interleave(sample_size, dim=0)
-        x0_repeated = x0.repeat_interleave(sample_size, dim=0)
+    if use_chirality:
+        cv0_delta = torch.zeros_like(cv0)
+        cv0_delta = torch.where(node_masks.bool(), cv0_delta, cv0)
+    else:
+        cv0_delta = None
+
+    batch_size, n, n = x0.shape
+    sample_size = args.sample_size
+
+    log_rank_0(f"[Diverse] Batch idx: {batch_idx}, batch_shape {batch_size, n, n} {(time.time() - start): .2f}s")
+
+    # Split across reactions, not across samples, to keep K samples coupled
+    if split > 1:
+        chunk_size = max(1, batch_size // split)
+        reaction_chunks = list(range(0, batch_size, chunk_size))
+    else:
+        reaction_chunks = [0]
+        chunk_size = batch_size
+
+    all_traj_be = []
+    all_traj_cv = []
+
+    for chunk_start in reaction_chunks:
+        chunk_end = min(chunk_start + chunk_size, batch_size)
+        cs = chunk_end - chunk_start
+
+        x0_chunk = x0[chunk_start:chunk_end]
+        y_chunk = y[chunk_start:chunk_end]
+        y_len_chunk = y_len[chunk_start:chunk_end]
+        mm_chunk = matrix_masks[chunk_start:chunk_end]
+        nm_chunk = node_masks[chunk_start:chunk_end]
+
+        x0_repeated = x0_chunk.repeat_interleave(sample_size, dim=0)
 
         x0_sample_repeated = flow.sample_be_matrix(x0_repeated)
 
-        matrix_masks_repeated = matrix_masks.repeat_interleave(sample_size, dim=0)
-        node_masks_repeated = node_masks.repeat_interleave(sample_size, dim=0)
+        matrix_masks_repeated = mm_chunk.repeat_interleave(sample_size, dim=0)
+        node_masks_repeated = nm_chunk.repeat_interleave(sample_size, dim=0)
 
-        x0_sample_repeated = x0_sample_repeated.masked_fill(~(matrix_masks_repeated.bool()), 0) # ode initial step has RMS norm thus padding nan has to be swap to 0
+        x0_sample_repeated = x0_sample_repeated.masked_fill(~(matrix_masks_repeated.bool()), 0)
 
         if use_chirality:
-            cv0_repeated = cv0_delta.repeat_interleave(sample_size, dim=0)
+            cv0_chunk = cv0_delta[chunk_start:chunk_end]
+            cv0_repeated = cv0_chunk.repeat_interleave(sample_size, dim=0)
             cv0_sample_repeated = flow.sample_chiral_vec(cv0_repeated)
             cv0_sample_repeated = cv0_sample_repeated.masked_fill(~(node_masks_repeated.bool()), 0)
-
-        del matrix_masks_repeated
-        del node_masks_repeated
+        else:
+            cv0_sample_repeated = torch.zeros(x0_repeated.shape[0], x0_repeated.shape[1], device=x0.device)
 
         torch.cuda.empty_cache()
 
-        y_repeated = y.repeat_interleave(sample_size, dim=0)
+        y_repeated = y_chunk.repeat_interleave(sample_size, dim=0)
         y_emb_repeated = model.id2emb(y_repeated)
-        y_len_batch_repeated = y_len.repeat_interleave(sample_size, dim=0)
+        y_len_repeated = y_len_chunk.repeat_interleave(sample_size, dim=0)
 
-        if use_chirality:
-            def velocity(t, state):
-                x, cv = state
-                v_be, v_cv = model.forward(y_emb_repeated, y_len_batch_repeated, x, t, cv)
-                return (v_be, v_cv)
+        traj_be, traj_cv = diverse_ode_integrate(
+            model, y_emb_repeated, y_len_repeated,
+            x0_sample_repeated, cv0_sample_repeated,
+            matrix_masks_repeated, node_masks_repeated,
+            K=sample_size,
+            num_steps=args.diverse_num_steps,
+            gamma=args.diverse_gamma,
+            diverse_be=True,
+            diverse_cv=False,
+        )
 
-            traj_be, traj_cv = torchdiffeq.odeint(
-                velocity,
-                (x0_sample_repeated, cv0_sample_repeated),
-                torch.linspace(0, 1, 2).to(args.device),
-                atol=1e-4,
-                rtol=1e-4,
-                method="dopri5",
-            )
-        else:
-            def velocity(t, x):
-                v_be, _ = model.forward(y_emb_repeated, y_len_batch_repeated, x, t, None)
-                return v_be
+        del matrix_masks_repeated, node_masks_repeated
 
-            traj_be = torchdiffeq.odeint(
-                velocity,
-                x0_sample_repeated,
-                torch.linspace(0, 1, 2).to(args.device),
-                atol=1e-4,
-                rtol=1e-4,
-                method="dopri5",
-            )
-            traj_cv = None
+        # traj shape: (2, cs*sample_size, n, n) -> collect per reaction
+        traj_be_cpu = traj_be.detach().cpu()
+        traj_cv_cpu = traj_cv.detach().cpu() if use_chirality else None
+        for r in range(cs):
+            start_idx = r * sample_size
+            end_idx = (r + 1) * sample_size
+            all_traj_be.append(traj_be_cpu[:, start_idx:end_idx])
+            if traj_cv_cpu is not None:
+                all_traj_cv.append(traj_cv_cpu[:, start_idx:end_idx])
 
-        big_traj_list.append((
-            traj_be.transpose(0, 1).detach().cpu(),
-            traj_cv.transpose(0, 1).detach().cpu() if traj_cv is not None else None,
-            sample_size,
-            ))
-
-    # merging
-    all_traj_be = []
-    all_traj_cv = []
-    has_cv = big_traj_list[0][1] is not None
-    for bs in range(batch_size):
-        for traj_be, traj_cv, sample_size in big_traj_list:
-            all_traj_be.append(traj_be[bs*sample_size:(bs+1)*sample_size].transpose(0, 1))
-            if has_cv:
-                all_traj_cv.append(traj_cv[bs*sample_size:(bs+1)*sample_size].transpose(0, 1))
-    traj_be = torch.concat(all_traj_be, dim=1) # concat on sampling dimension
-    traj_cv = torch.concat(all_traj_cv, dim=1) if has_cv else None
-    # ------------------------------------#
+    # Concat all: (2, batch_size * sample_size, n, n)
+    traj_be = torch.cat(all_traj_be, dim=1)
+    traj_cv = torch.cat(all_traj_cv, dim=1) if all_traj_cv else None
     return traj_be, traj_cv
+
 
 def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=None):
     accuracy = []
     model.eval()
     with torch.no_grad():
-        log_rank_0('Start ODE Prediction...')
+        log_rank_0('Start Diverse ODE Prediction...')
         if dist.get_rank() == 0:
             inferenced_indexes = set()
 
@@ -213,12 +156,10 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
             tgt_smiles_list = data_batch.tgt_smiles_list
             tgt_chiral_vec_list = data_batch.tgt_chiral_vecs
 
-
-            # if (batch_size*n*n) <= 5*360*360:
             if (batch_size*n*n) <= 15*130*130:
-                traj_be, traj_cv = predict_batch(args, batch_idx, data_batch, model, flow, 1)
+                traj_be, traj_cv = predict_batch_diverse(args, batch_idx, data_batch, model, flow, 1)
             else:
-                traj_be, traj_cv = predict_batch(args, batch_idx, data_batch, model, flow, 2)
+                traj_be, traj_cv = predict_batch_diverse(args, batch_idx, data_batch, model, flow, 2)
 
             if torch.distributed.is_initialized() and dist.get_world_size() > 1:
                 gathered_results = [None for _ in range(dist.get_world_size())]
@@ -226,9 +167,9 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
                     (src_data_indices,
                      traj_be, traj_cv,
                      x0,
-                     cv0, 
-                     y_len, 
-                     src_smiles_list, 
+                     cv0,
+                     y_len,
+                     src_smiles_list,
                      tgt_smiles_list,
                      tgt_chiral_vec_list,
                      ),
@@ -238,12 +179,12 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
             else:
                 gathered_results = [
                     (src_data_indices,
-                     traj_be, 
-                     traj_cv, 
-                     x0, 
-                     cv0, 
-                     y_len, 
-                     src_smiles_list, 
+                     traj_be,
+                     traj_cv,
+                     x0,
+                     cv0,
+                     y_len,
+                     src_smiles_list,
                      tgt_smiles_list,
                      tgt_chiral_vec_list,
                      )
@@ -297,7 +238,6 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
                         tgt_is_chiral = (tgt_chiral_vec != 0)
                         tgt_changed_is_chiral = (tgt_delta_chiral_vec != 0) & tgt_is_chiral
 
-                    # Unique on joint (BE matrix, chiral vector) pairs to preserve pairing
                     n_pad = product_BE_matrices.shape[1]
                     if has_cv:
                         flat_pairs = torch.cat([
@@ -333,11 +273,9 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
                         if not is_sym(pred_be):
                             not_sym += 1
 
-                        # Bonding evaluation
                         try:
                             pred_mol = BEmatrix_to_mol(reac_mol, pred_be)
 
-                            # Apply chirality before standardize_smiles clears atom maps in-place
                             if has_cv:
                                 try:
                                     pred_mol_chiral = chiral_vec_to_mol(pred_mol, pred_cv)
@@ -365,7 +303,6 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
                             else:
                                 no_smi_non_conserved += count
 
-                        # Chiral vector evaluation (only when chirality is enabled)
                         if has_cv:
                             correct_centers += count * (pred_cv == tgt_chiral_vec).sum()
                             total_chiral_centers += count * tgt_is_chiral.sum()
@@ -392,28 +329,29 @@ def get_predictions(args, model, flow, data_loader, iter_count=np.inf, write_o=N
                     correct_chiral_smi = pred_chiral_smi_dict.get(tgt_chiral_smi, 0)
 
                     metric = [
-                        correct,                          # 0
-                        wrong_smi_conserved,              # 1
-                        wrong_smi_non_conserved,          # 2
-                        no_smi_conserved,                 # 3
-                        no_smi_non_conserved,             # 4
-                        correct_cv,                       # 5
-                        correct_centers,                  # 6
-                        false_positives,                  # 7
-                        false_negatives,                  # 8
-                        correct_chiral_centers,           # 9
-                        total_chiral_centers,             # 10
-                        wrong_sign_chiral,                # 11
-                        chiral_center_acc,                # 12
-                        correct_changed_chiral_centers,   # 13
-                        total_changed_chiral_centers,     # 14
-                        0,                                # 15 (reserved)
-                        correct_chiral_smi,               # 16
+                        correct,
+                        wrong_smi_conserved,
+                        wrong_smi_non_conserved,
+                        no_smi_conserved,
+                        no_smi_non_conserved,
+                        correct_cv,
+                        correct_centers,
+                        false_positives,
+                        false_negatives,
+                        correct_chiral_centers,
+                        total_chiral_centers,
+                        wrong_sign_chiral,
+                        chiral_center_acc,
+                        correct_changed_chiral_centers,
+                        total_changed_chiral_centers,
+                        0,
+                        correct_chiral_smi,
                     ]
 
                     predictions = [(smi, pred_chiral_smi_dict[smi]) for smi in pred_chiral_smi_dict]
+                    n_unique = pairs.shape[0]
                     if write_o is not None:
-                        write_o.write(f"{metric}|{not_sym}|{predictions}\n")
+                        write_o.write(f"{metric}|{not_sym}|{predictions}|unique={n_unique}/{args.sample_size}\n")
                         write_o.flush()
                     accuracy.append(metric)
 
@@ -429,7 +367,7 @@ def main(args):
         torch.backends.cudnn.benchmark = True
 
     if args.do_validate:
-        phase = "valid"
+        phase = "valid-diverse"
         checkpoints = glob.glob(os.path.join(args.model_path, "*.pt"))
         checkpoints = sorted(
             checkpoints,
@@ -437,32 +375,35 @@ def main(args):
             reverse=True
         )
         assert len(args.steps2validate) > 1, "Nothing to validate on"
-        checkpoints = [ckpt for ckpt in checkpoints 
-            if ckpt.split(".")[-2].split("_")[0] in args.steps2validate] # lr0.001
+        checkpoints = [ckpt for ckpt in checkpoints
+            if ckpt.split(".")[-2].split("_")[0] in args.steps2validate]
     else:
-        phase = "test"
+        phase = "test-diverse"
         checkpoints = [os.path.join(args.model_path, args.model_name)]
-        
 
     for ckpt_i, checkpoint in enumerate(checkpoints):
         state = torch.load(checkpoint, weights_only=False, map_location=device)
         pretrain_args = state["args"]
         pretrain_args.load_from = checkpoint
         pretrain_args.device = device
-        
+
         pretrain_state_dict = state["state_dict"]
         pretrain_args.local_rank = args.local_rank
 
         attn_model, flow, state = init_model(pretrain_args)
         if hasattr(attn_model, "module"):
-            attn_model = attn_model.module        # unwrap DDP attn_model to enable accessing attn_model func directly
+            attn_model = attn_model.module
 
         pretrain_state_dict = {k.replace("module.", ""): v for k, v in pretrain_state_dict.items()}
         attn_model.load_state_dict(pretrain_state_dict, strict=False)
         log_rank_0(f"Loaded pretrained state_dict from {checkpoint} (use_chirality={getattr(attn_model, 'use_chirality', True)})")
+        log_rank_0(f"DiverseFlow params: gamma={args.diverse_gamma}, steps={args.diverse_num_steps}")
 
         os.makedirs(args.result_path, exist_ok=True)
-        results_path = os.path.join(args.result_path, f'{phase}-{args.sample_size}-{checkpoint.split(".")[-2]}.txt')
+        results_path = os.path.join(
+            args.result_path,
+            f'{phase}-{args.sample_size}-g{args.diverse_gamma}-s{args.diverse_num_steps}-{checkpoint.split(".")[-2]}.txt'
+        )
         if os.path.isfile(results_path):
             with open(results_path, 'r') as fp:
                 n_lines = len(fp.readlines())
@@ -480,9 +421,9 @@ def main(args):
         else:
             with open(args.test_path, 'r') as test_o:
                 test_smiles_list = test_o.readlines()[start:]
-        
+
         assert len(test_smiles_list) > 0, "Nothing to do inference"
-        
+
         test_dataset = ReactionDataset(args, test_smiles_list)
         test_loader = init_loader(args, test_dataset,
                                 batch_size=args.test_batch_size,
@@ -492,13 +433,14 @@ def main(args):
             metrics = get_predictions(args, attn_model, flow, test_loader, write_o=result_o)
         if dist.get_rank() == 0:
             metrics = np.array(metrics)
-            topk_accuracies = np.mean(metrics[:, 0].astype(bool)) # correct smiles
+            topk_accuracies = np.mean(metrics[:, 0].astype(bool))
+            n_unique_avg = "N/A"  # logged per-reaction in file
             log_rank_0(f"Topk accuracies: {(topk_accuracies * 100): .2f}")
 
 
 if __name__ == "__main__":
     args = Args
     args.local_rank = int(os.environ["LOCAL_RANK"]) if os.environ.get("LOCAL_RANK") else -1
-    logger = setup_logger(args, "eval")
-    log_args(args, 'evaluation') 
+    logger = setup_logger(args, "eval_diverse")
+    log_args(args, 'diverse_evaluation')
     main(args)

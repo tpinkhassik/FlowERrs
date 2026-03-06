@@ -50,26 +50,41 @@ class FlowERLightningModule(pl.LightningModule):
         node_masks = train_batch.node_masks
         step_weights = train_batch.step_weights.float()
 
+        use_chirality = getattr(self.model, 'use_chirality', True)
+
         x0_sample = self.flow.sample_be_matrix(x0)
-        cv0_delta = torch.zeros_like(cv1)
-        cv0_delta = torch.where(node_masks.bool(), cv0_delta, cv1)
-        cv0_sample = self.flow.sample_chiral_vec(cv0_delta)
+
+        if use_chirality:
+            cv0_delta = torch.zeros_like(cv1)
+            cv0_delta = torch.where(node_masks.bool(), cv0_delta, cv1)
+            cv0_sample = self.flow.sample_chiral_vec(cv0_delta)
+        else:
+            cv0_delta = None
+            cv0_sample = None
 
         t = torch.rand(x0.shape[0]).type_as(x0)
 
-        xt, cvt = self.flow.sample_conditional_pt(x0, x1, cv0_delta, cv1, t)
-        ut = self.flow.compute_conditional_vector_field(x0_sample, x1)
-        u_cvt = self.flow.compute_conditional_vector_field(cv0_sample, cv1)
+        if use_chirality:
+            xt, cvt = self.flow.sample_conditional_pt(x0, x1, cv0_delta, cv1, t)
+            ut = self.flow.compute_conditional_vector_field(x0_sample, x1)
+            u_cvt = self.flow.compute_conditional_vector_field(cv0_sample, cv1)
+        else:
+            xt, cvt = self.flow.sample_conditional_pt_be_only(x0, x1, t)
+            ut = self.flow.compute_conditional_vector_field(x0_sample, x1)
 
         y_emb = self.model.id2emb(y)
-        vt, v_cvt = self.model(y_emb, y_len, xt, t, cvt)
+        vt, v_cvt = self.model(y_emb, y_len, xt, t, cvt if use_chirality else None)
 
         be_err2 = ((vt - ut) * matrix_masks) ** 2
-        cv_err2 = ((v_cvt - u_cvt) * node_masks) ** 2
 
         weight_denom = step_weights.sum().clamp_min(1e-12)
         be_loss = torch.sum(be_err2 * step_weights[:, None, None]) / weight_denom
-        cv_loss = torch.sum(cv_err2 * step_weights[:, None]) / weight_denom
+
+        if use_chirality:
+            cv_err2 = ((v_cvt - u_cvt) * node_masks) ** 2
+            cv_loss = torch.sum(cv_err2 * step_weights[:, None]) / weight_denom
+        else:
+            cv_loss = torch.tensor(0.0, device=be_loss.device)
 
         loss = be_loss + cv_loss
 
@@ -111,39 +126,54 @@ class FlowERLightningModule(pl.LightningModule):
         src_smiles_list = val_batch.src_smiles_list
         tgt_smiles_list = val_batch.tgt_smiles_list
 
+        use_chirality = getattr(self.model, 'use_chirality', True)
         batch_size, n, _ = x0.shape
         sample_size = self.args.sample_size
 
-        cv0_delta = torch.zeros_like(cv0)
-        cv0_delta = torch.where(node_masks.bool(), cv0_delta, cv0)
-
         x0_repeated = x0.repeat_interleave(sample_size, dim=0)
-        cv0_repeated = cv0_delta.repeat_interleave(sample_size, dim=0)
         x0_sample_repeated = self.flow.sample_be_matrix(x0_repeated)
-        cv0_sample_repeated = self.flow.sample_chiral_vec(cv0_repeated)
 
         matrix_masks_rep = matrix_masks.repeat_interleave(sample_size, dim=0)
         node_masks_rep = node_masks.repeat_interleave(sample_size, dim=0)
         x0_sample_repeated = x0_sample_repeated.masked_fill(~(matrix_masks_rep.bool()), 0)
-        cv0_sample_repeated = cv0_sample_repeated.masked_fill(~(node_masks_rep.bool()), 0)
 
         y_repeated = y.repeat_interleave(sample_size, dim=0)
         y_emb_repeated = self.model.id2emb(y_repeated)
         y_len_repeated = y_len.repeat_interleave(sample_size, dim=0)
 
-        def velocity(t, state):
-            x, cv = state
-            v_be, v_cv = self.model.forward(y_emb_repeated, y_len_repeated, x, t, cv)
-            return (v_be, v_cv)
+        if use_chirality:
+            cv0_delta = torch.zeros_like(cv0)
+            cv0_delta = torch.where(node_masks.bool(), cv0_delta, cv0)
+            cv0_repeated = cv0_delta.repeat_interleave(sample_size, dim=0)
+            cv0_sample_repeated = self.flow.sample_chiral_vec(cv0_repeated)
+            cv0_sample_repeated = cv0_sample_repeated.masked_fill(~(node_masks_rep.bool()), 0)
 
-        traj_be, traj_cv = torchdiffeq.odeint(
-            velocity,
-            (x0_sample_repeated, cv0_sample_repeated),
-            torch.linspace(0, 1, 2, device=self.device),
-            atol=1e-4,
-            rtol=1e-4,
-            method="dopri5",
-        )
+            def velocity(t, state):
+                x, cv = state
+                v_be, v_cv = self.model.forward(y_emb_repeated, y_len_repeated, x, t, cv)
+                return (v_be, v_cv)
+
+            traj_be, traj_cv = torchdiffeq.odeint(
+                velocity,
+                (x0_sample_repeated, cv0_sample_repeated),
+                torch.linspace(0, 1, 2, device=self.device),
+                atol=1e-4,
+                rtol=1e-4,
+                method="dopri5",
+            )
+        else:
+            def velocity(t, x):
+                v_be, _ = self.model.forward(y_emb_repeated, y_len_repeated, x, t, None)
+                return v_be
+
+            traj_be = torchdiffeq.odeint(
+                velocity,
+                x0_sample_repeated,
+                torch.linspace(0, 1, 2, device=self.device),
+                atol=1e-4,
+                rtol=1e-4,
+                method="dopri5",
+            )
 
         last_be = traj_be[-1].cpu()
         pred_matrices = torch.round(last_be)
@@ -230,8 +260,8 @@ class FlowERLightningModule(pl.LightningModule):
         module = cls(pretrain_args)
         state_dict = state["state_dict"]
         state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
-        module.model.load_state_dict(state_dict)
-        logging.info(f"Loaded legacy checkpoint from {checkpoint_path}")
+        module.model.load_state_dict(state_dict, strict=False)
+        logging.info(f"Loaded legacy checkpoint from {checkpoint_path} (use_chirality={getattr(module.model, 'use_chirality', True)})")
         return module, state
 
 

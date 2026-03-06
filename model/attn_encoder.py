@@ -234,8 +234,10 @@ class AttnEncoderXL(nn.Module):
         self.d_ff = args.enc_filter_size
         self.attention_dropout = args.attn_dropout
 
+        self.use_chirality = getattr(args, 'use_chirality', True)
         self.atom_embedding = nn.Embedding(len(ELEM_LIST) , self.d_model, padding_idx=0)
-        self.chiral_proj = nn.Linear(1, self.d_model)
+        if self.use_chirality:
+            self.chiral_proj = nn.Linear(1, self.d_model)
         self.rbf = RBFExpansion(args)
 
         self.time_dim = self.d_model - self.rbf.dim
@@ -298,10 +300,11 @@ class AttnEncoderXL(nn.Module):
 
         # Should be simple.  I don't think rbf layers are warranted yet, will add if needed.
         # Decode chirality from the same embedded features a_i.
-        self.chiral_head = torch.nn.Sequential(
-            *[Block(self.d_model) for _ in range(self.post_processing_layers)],
-            torch.nn.Linear(self.d_model, 1)
-        )
+        if self.use_chirality:
+            self.chiral_head = torch.nn.Sequential(
+                *[Block(self.d_model) for _ in range(self.post_processing_layers)],
+                torch.nn.Linear(self.d_model, 1)
+            )
 
     def id2emb(self, src_token_id):
         return self.atom_embedding(src_token_id)
@@ -340,8 +343,8 @@ class AttnEncoderXL(nn.Module):
         a_i = self.dropout(a_i)
 
         # Maybe chiral_vec should be defined as zero if there is no chiral information?
-        # TODO: Implement a more robust way to ingest/predict multimodal atom features. 
-        if chiral_vec is not None:
+        # TODO: Implement a more robust way to ingest/predict multimodal atom features.
+        if self.use_chirality and chiral_vec is not None:
             if chiral_vec.dim() == 3 and chiral_vec.size(-1) == 1:
                 chiral_vec = chiral_vec.squeeze(-1)
             chiral_feat = self.chiral_proj(chiral_vec.unsqueeze(-1))
@@ -360,7 +363,7 @@ class AttnEncoderXL(nn.Module):
         # a_i - atom embeddings after multiheaded attention on atom embeddings + rbf expansion
 
         # draw out diagram of model (model figure)
-        v_cv = self.chiral_head(a_i).squeeze(-1)          # b,n
+        v_cv = self.chiral_head(a_i).squeeze(-1) if self.use_chirality else None  # b,n or None
 
         # diagonal prediction
         query_diag = self.query_diag_w(a_i)             # b,n,d @ d,d -> b,n,d

@@ -50,11 +50,26 @@ def init_model(args):
         pretrain_args = state["args"]
         pretrain_args.local_rank = args.local_rank
 
-        graph_attn_model = AttnEncoderXL(pretrain_args)
+        # Auto-detect chirality support from checkpoint weights
         pretrain_state_dict = state["state_dict"]
         pretrain_state_dict = {k.replace("module.", ""): v for k, v in pretrain_state_dict.items()}
-        graph_attn_model.load_state_dict(pretrain_state_dict)
-        log_rank_0("Loaded pretrained model state_dict.")
+        ckpt_has_chirality = any(k.startswith("chiral_") for k in pretrain_state_dict)
+
+        # Propagate use_chirality: use current args setting, but if checkpoint
+        # lacks chiral weights and current args wants chirality, warn and disable
+        use_chirality = getattr(args, 'use_chirality', True)
+        if use_chirality and not ckpt_has_chirality:
+            log_rank_0("WARNING: Checkpoint lacks chiral weights. Disabling chirality.")
+            use_chirality = False
+        pretrain_args.use_chirality = use_chirality
+
+        graph_attn_model = AttnEncoderXL(pretrain_args)
+        missing, unexpected = graph_attn_model.load_state_dict(pretrain_state_dict, strict=False)
+        if missing:
+            log_rank_0(f"Missing keys in checkpoint (will be initialized): {missing}")
+        if unexpected:
+            log_rank_0(f"Unexpected keys in checkpoint (ignored): {unexpected}")
+        log_rank_0(f"Loaded pretrained model state_dict (use_chirality={use_chirality}).")
         flow_model = ConditionalFlowMatcher(args)
     else:
         if checkpoint_path:
@@ -219,33 +234,45 @@ def main(args):
             matrix_masks = train_batch.matrix_masks
             node_masks = train_batch.node_masks
             step_weights = train_batch.step_weights.float()
-            
+
+            use_chirality = getattr(model.module if hasattr(model, "module") else model, 'use_chirality', True)
 
             x0_sample = flow.sample_be_matrix(x0)
-            cv0_delta = torch.zeros_like(cv1)
-            cv0_delta = torch.where(node_masks.bool(), cv0_delta, cv1)
-            cv0_sample = flow.sample_chiral_vec(cv0_delta)
+            if use_chirality:
+                cv0_delta = torch.zeros_like(cv1)
+                cv0_delta = torch.where(node_masks.bool(), cv0_delta, cv1)
+                cv0_sample = flow.sample_chiral_vec(cv0_delta)
+            else:
+                cv0_delta = None
+                cv0_sample = None
 
             t = torch.rand(x0.shape[0]).type_as(x0)
-            
 
-            xt, cvt = flow.sample_conditional_pt(x0, x1, cv0_delta, cv1, t)
-            ut = flow.compute_conditional_vector_field(x0_sample, x1)
-            u_cvt = flow.compute_conditional_vector_field(cv0_sample, cv1)
+            if use_chirality:
+                xt, cvt = flow.sample_conditional_pt(x0, x1, cv0_delta, cv1, t)
+                ut = flow.compute_conditional_vector_field(x0_sample, x1)
+                u_cvt = flow.compute_conditional_vector_field(cv0_sample, cv1)
+            else:
+                xt, cvt = flow.sample_conditional_pt_be_only(x0, x1, t)
+                ut = flow.compute_conditional_vector_field(x0_sample, x1)
 
             if hasattr(model, "module"):
                 model = model.module        # unwrap DDP attn_model to enable accessing attn_model func directly
 
             y_emb = model.id2emb(y)
-            vt, v_cvt = model(y_emb, y_len, xt, t, cvt)
+            vt, v_cvt = model(y_emb, y_len, xt, t, cvt if use_chirality else None)
 
-            
+
             be_err2 = ((vt - ut) * matrix_masks) ** 2
-            cv_err2 = ((v_cvt - u_cvt) * node_masks) ** 2
 
             weight_denom = step_weights.sum().clamp_min(1e-12)
             be_loss = torch.sum(be_err2 * step_weights[:, None, None]) / weight_denom
-            cv_loss = torch.sum(cv_err2 * step_weights[:, None]) / weight_denom
+
+            if use_chirality:
+                cv_err2 = ((v_cvt - u_cvt) * node_masks) ** 2
+                cv_loss = torch.sum(cv_err2 * step_weights[:, None]) / weight_denom
+            else:
+                cv_loss = torch.tensor(0.0, device=be_loss.device)
 
             #TODO: Implement FAMO or Bloop or the like to do multiobjective learning.
             loss = be_loss + cv_loss
