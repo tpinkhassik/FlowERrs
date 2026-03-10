@@ -37,8 +37,9 @@ def extract_product_ids(reaction):
 
 
 def convert_dative_bonds(mol):
-    """Convert dative bonds (-> / <-) to single bonds for BE matrix compatibility.
-    Both are 2-electron bonds; FlowER only handles SINGLE/DOUBLE/TRIPLE/AROMATIC."""
+    """Convert dative bonds (<- / ->) to single bonds for BE matrix compatibility.
+    Both are 2-electron bonds; FlowER only handles SINGLE/DOUBLE/TRIPLE/AROMATIC.
+    Returns None if conversion fails."""
     has_dative = any(b.GetBondType() == Chem.rdchem.BondType.DATIVE
                      for b in mol.GetBonds())
     if not has_dative:
@@ -51,15 +52,21 @@ def convert_dative_bonds(mol):
     try:
         Chem.SanitizeMol(mol)
     except:
-        # Metal complexes may fail valence checks — skip that part only
-        Chem.SanitizeMol(mol,
-            Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+        try:
+            # Metal complexes may fail valence checks — skip that part only
+            Chem.SanitizeMol(mol,
+                Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+        except:
+            return None
     return mol
 
 
 def mol_to_explicit_h_smi(mol):
-    """Add explicit Hs and return SMILES with all Hs shown."""
+    """Add explicit Hs and return SMILES with all Hs shown.
+    Returns (None, None) if conversion fails."""
     mol = convert_dative_bonds(mol)
+    if mol is None:
+        return None, None
     mol = Chem.AddHs(mol, explicitOnly=False)
     return Chem.MolToSmiles(mol, isomericSmiles=False, allHsExplicit=True), mol
 
@@ -186,8 +193,9 @@ try:
             mol = Chem.MolFromSmiles(doc["smiles"])
             if mol is not None:
                 smi, mol_h = mol_to_explicit_h_smi(mol)
-                id_to_smi[doc["_id"]] = smi
-                id_to_atoms[doc["_id"]] = count_atoms(mol_h)
+                if smi is not None:
+                    id_to_smi[doc["_id"]] = smi
+                    id_to_atoms[doc["_id"]] = count_atoms(mol_h)
 
     print(f"Resolved {len(id_to_smi)}/{len(all_ids)} molecules", file=sys.stderr)
 

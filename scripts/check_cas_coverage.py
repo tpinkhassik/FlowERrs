@@ -24,14 +24,12 @@ import networkx as nx
 
 
 def clean(smi):
-    """Canonicalize SMILES: remove Hs, clear atom maps, convert dative bonds (<- / ->)."""
+    """Canonicalize SMILES: remove Hs, clear atom maps."""
     try:
         mol = Chem.MolFromSmiles(smi, sanitize=False)
+        if mol is None:
+            return None
         Chem.SanitizeMol(mol)
-        # Convert dative bonds for consistent comparison
-        for bond in mol.GetBonds():
-            if bond.GetBondType() == Chem.rdchem.BondType.DATIVE:
-                bond.SetBondType(Chem.rdchem.BondType.SINGLE)
         mol = Chem.RemoveHs(mol)
         for a in mol.GetAtoms():
             a.SetAtomMapNum(0)
