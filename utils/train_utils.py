@@ -49,7 +49,7 @@ def setup_logger(args, phase, warning_off: bool = False):
     else:
         RDLogger.DisableLog("rdApp.warning")
 
-    log_root = "/home/ptim/orcd/scratch/logs"
+    log_root = "/work1/connorcoley/ptim/logs"
     log_dir = os.path.join(log_root, args.data_name, args.exp_name)
     os.makedirs(log_dir, exist_ok=True)
     dt = datetime.strftime(datetime.now(), "%y%m%d-%H%Mh")

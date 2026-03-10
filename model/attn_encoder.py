@@ -34,7 +34,7 @@ def zero_center_output(x_batch, ori_node_mask_batch):
     return map_zero_center(x_batch, node_mask_batch).masked_fill(~(node_mask_batch.bool()), 1e-19)
 
 class RBFExpansion(nn.Module):
-    def __init__(self, args:Args):
+    def __init__(self, args):
         """
         Adapted from Schnet.
         https://github.com/atomistic-machine-learning/SchNet/blob/master/src/schnet/nn/layers/rbf.py
@@ -83,7 +83,7 @@ class MultiHeadedRelAttention(nn.Module):
         self.v: torch.Tensor = v if v is not None else \
             nn.Parameter(torch.randn(self.d_model), requires_grad=True)
 
-    def forward(self, inputs:torch.FloatTensor, mask:torch.Tensor[int], rel_emb:torch.Tensor):
+    def forward(self, inputs, mask, rel_emb):
         """
         Compute the context vector and the attention vectors.
 

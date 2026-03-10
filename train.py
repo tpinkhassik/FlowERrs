@@ -46,7 +46,7 @@ def init_model(args):
     checkpoint_exists = bool(checkpoint_path) and os.path.isfile(checkpoint_path)
     if checkpoint_exists:
         log_rank_0(f"Loading pretrained state from {checkpoint_path}")
-        state = torch.load(checkpoint_path, map_location=torch.device("cpu"))
+        state = torch.load(checkpoint_path, weights_only=False,  map_location=torch.device("cpu"))
         pretrain_args = state["args"]
         pretrain_args.local_rank = args.local_rank
 

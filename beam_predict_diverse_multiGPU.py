@@ -150,7 +150,7 @@ def worker(rank, args, chunk, chunk_idx, lock, queue):
     checkpoint = os.path.join(args.model_path, args.model_name)
     state = torch.load(checkpoint, weights_only=False, map_location=device)
     pretrain_args = state["args"]
-    pretrain_args.load_from = None
+    pretrain_args.load_from = ""
     pretrain_args.device = device
     pretrain_args.local_rank = -1
     pretrain_args.use_chirality = getattr(args, 'use_chirality', True)

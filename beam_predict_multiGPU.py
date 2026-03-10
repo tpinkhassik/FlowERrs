@@ -217,7 +217,7 @@ def worker(rank, args, chunk, chunk_idx, lock, queue):
     checkpoint = os.path.join(args.model_path, args.model_name)
     state = torch.load(checkpoint, weights_only=False, map_location=device)
     pretrain_args = state["args"]
-    pretrain_args.load_from = None
+    pretrain_args.load_from = ""
     pretrain_args.device = device
     pretrain_args.local_rank = -1  # Disable distributed training
     pretrain_args.use_chirality = getattr(args, 'use_chirality', True)
@@ -338,7 +338,7 @@ def main_multi_gpu(args):
 
 if __name__ == "__main__":
     # Ensure clean startup
-    mp.set_start_method('spawn')
+    mp.set_start_method('fork')
     
     args = Args
     logger = setup_logger(args, "beam")

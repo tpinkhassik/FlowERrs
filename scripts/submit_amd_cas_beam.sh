@@ -2,7 +2,7 @@
 #SBATCH -J FlowER_beam_diverse
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ptim@mit.edu
-#SBATCH -p mi3258x
+#SBATCH -p mi3008x
 #SBATCH -N 1
 #SBATCH --exclusive
 #SBATCH --time=10:00:00
@@ -19,7 +19,7 @@ set -euo pipefail
 #   Diverse beam search:
 #     sbatch --export=ALL,DIVERSE=1 scripts/submit_amd_cas_beam.sh
 
-REPO_DIR="/home/ptim/FlowER/FlowERrs"
+REPO_DIR="/home1/ptim/FlowER/FlowERrs"
 cd "$REPO_DIR"
 
 [ -n "$WORK" ] || { echo "WORK env var is not set"; exit 1; }
