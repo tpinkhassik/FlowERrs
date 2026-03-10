@@ -7,8 +7,8 @@
 #SBATCH -n 16
 #SBATCH --mem=256G
 #SBATCH --time=10:00:00
-#SBATCH --output=/home/ptim/orcd/scratch/logs/%x_%j.out
-#SBATCH --error=/home/ptim/orcd/scratch/logs/%x_%j.err
+#SBATCH --output=/work1/connorcoley/ptim/logs/%x_%j.out
+#SBATCH --error=/work1/connorcoley/ptim/logs/%x_%j.err
 #SBATCH --requeue
 
 set -euo pipefail
@@ -23,16 +23,15 @@ set -euo pipefail
 REPO_DIR="/home/ptim/FlowER/FlowERrs"
 cd "$REPO_DIR"
 
-module load miniforge
+[ -n "$WORK" ] || { echo "WORK env var is not set"; exit 1; }
 
-conda activate flower
+source .flower/bin/activate
 
 # AMD ROCm — use HIP_VISIBLE_DEVICES instead of CUDA_VISIBLE_DEVICES
+# Beam search handles multi-GPU internally via mp.Process + torch.cuda.device_count().
+# Adjust the number of GPUs here (fewer = cheaper, more = faster).
 unset CUDA_VISIBLE_DEVICES
 export HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-
-# Override the orchestration script's GPU settings for ROCm
-export NUM_GPUS_PER_NODE=8
 export PYTORCH_HIP_ALLOC_CONF=expandable_segments:True
 
 # Model config (must match training checkpoint)
@@ -56,20 +55,18 @@ export NBEST=5
 export MAX_DEPTH=10
 export CHUNK_SIZE=50
 
-export NUM_NODES=1
-export NODE_RANK=0
-export MASTER_ADDR=localhost
-export MASTER_PORT=1235
 
 [ -f "$TEST_FILE" ] || { echo "$TEST_FILE not found"; exit 1; }
 
 # Choose vanilla or diverse beam search
+# Run directly with python — beam search handles multi-GPU internally,
+# no need for torchrun/DDP overhead.
 if [ "${DIVERSE:-0}" = "1" ]; then
     export RESULT_PATH="$WORK/results/diverse"
     echo "Running DiverseFlow beam search"
-    sh scripts/search_diverse_multiGPU.sh
+    python beam_predict_diverse_multiGPU.py
 else
     export RESULT_PATH="$WORK/results/vanilla"
     echo "Running vanilla beam search"
-    sh scripts/search_multiGPU.sh
+    python beam_predict_multiGPU.py
 fi

@@ -220,7 +220,8 @@ def worker(rank, args, chunk, chunk_idx, lock, queue):
     pretrain_args.load_from = None
     pretrain_args.device = device
     pretrain_args.local_rank = -1  # Disable distributed training
-    
+    pretrain_args.use_chirality = getattr(args, 'use_chirality', True)
+
     # Initialize model without DDP
     pretrain_state_dict = state["state_dict"]
     attn_model, flow, _ = init_model(pretrain_args)
@@ -242,7 +243,8 @@ def worker(rank, args, chunk, chunk_idx, lock, queue):
         if ">>" in line:
             ori_reactant = line.strip().split(">>")[0]
             products = line.strip().split(">>")[1].split("|")
-            products = [Chem.MolToSmiles(Chem.MolFromSmiles(smi)) for smi in products]
+            products = [Chem.MolToSmiles(m) for smi in products
+                        if (m := Chem.MolFromSmiles(smi)) is not None]
         else:
             ori_reactant = line.strip()
             products = []
