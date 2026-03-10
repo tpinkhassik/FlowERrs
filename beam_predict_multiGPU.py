@@ -231,6 +231,7 @@ def worker(rank, args, chunk, chunk_idx, lock, queue):
     
     pretrain_state_dict = {k.replace("module.", ""): v for k, v in pretrain_state_dict.items()}
     attn_model.load_state_dict(pretrain_state_dict, strict=False)
+    attn_model.eval()
 
     # print(f"GPU {rank} starting processing {len(chunk)} items")
     

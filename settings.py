@@ -83,10 +83,10 @@ class Args:
     do_validate = False
 
     # beam-search #
-    beam_size = 5
-    nbest = 3
-    max_depth = 15
-    chunk_size = 50
+    beam_size = int(os.environ.get("BEAM_SIZE", 5))
+    nbest = int(os.environ.get("NBEST", 3))
+    max_depth = int(os.environ.get("MAX_DEPTH", 15))
+    chunk_size = int(os.environ.get("CHUNK_SIZE", 50))
 
     # DiverseFlow (DPP-coupled sampling) #
     diverse_gamma = float(os.environ.get("DIVERSE_GAMMA", 5.0))

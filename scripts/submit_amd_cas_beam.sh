@@ -1,13 +1,12 @@
 #!/bin/bash
-#SBATCH -J FlowER_cas_beam
+#SBATCH -J FlowER_beam_diverse
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ptim@mit.edu
-#SBATCH -p sched_engage_amd          # TODO: verify AMD partition name
-#SBATCH -G mi210:1                   # TODO: verify GPU type (mi210, mi250x, mi300x)
+#SBATCH -p mi3258x
 #SBATCH -N 1
 #SBATCH -n 16
 #SBATCH --mem=256G
-#SBATCH --time=5:59:59
+#SBATCH --time=10:00:00
 #SBATCH --output=/home/ptim/orcd/scratch/logs/%x_%j.out
 #SBATCH --error=/home/ptim/orcd/scratch/logs/%x_%j.err
 #SBATCH --requeue
@@ -30,35 +29,47 @@ conda activate flower
 
 # AMD ROCm — use HIP_VISIBLE_DEVICES instead of CUDA_VISIBLE_DEVICES
 unset CUDA_VISIBLE_DEVICES
-export HIP_VISIBLE_DEVICES=0
+export HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
 # Override the orchestration script's GPU settings for ROCm
-export NUM_GPUS_PER_NODE=1
+export NUM_GPUS_PER_NODE=8
 export PYTORCH_HIP_ALLOC_CONF=expandable_segments:True
 
-# Point at CAS beam search data
-export TEST_FILE="$REPO_DIR/data/cas/beam.txt"
-[ -f "$TEST_FILE" ] || { echo "$TEST_FILE not found"; exit 1; }
-
-# Model config (must match training)
+# Model config (must match training checkpoint)
 export DATA_NAME="flower_new_dataset"
 export EXP_NAME="mit_normal_gpu_chi_test"
 export EMB_DIM=256
 export RBF_HIGH=12
 export RBF_GAP=0.1
 export SIGMA=0.15
-export MODEL_NAME=""  # TODO: fill in checkpoint filename
+export USE_CHIRALITY=0
+export MODEL_NAME="model.2880000_95.pt"
 
-export MODEL_PATH="/home/ptim/orcd/scratch/FlowERrs_checkpoints/$DATA_NAME/$EXP_NAME/"
-export SCALE=1  # full sample size (64) for beam search
+export MODEL_PATH="$WORK/checkpoints/"
+export TEST_FILE="$WORK/data/beam.txt"
+export SCALE=1
+export TEST_BATCH_SIZE=1024
+export NUM_WORKERS=4
+
+export BEAM_SIZE=10
+export NBEST=5
+export MAX_DEPTH=10
+export CHUNK_SIZE=50
+
+export NUM_NODES=1
+export NODE_RANK=0
+export MASTER_ADDR=localhost
+export MASTER_PORT=1235
+
+[ -f "$TEST_FILE" ] || { echo "$TEST_FILE not found"; exit 1; }
 
 # Choose vanilla or diverse beam search
 if [ "${DIVERSE:-0}" = "1" ]; then
-    export RESULT_PATH="/home/ptim/orcd/scratch/FlowERrs_results/$DATA_NAME/$EXP_NAME/cas_beam_diverse/"
+    export RESULT_PATH="$WORK/results/diverse"
     echo "Running DiverseFlow beam search"
     sh scripts/search_diverse_multiGPU.sh
 else
-    export RESULT_PATH="/home/ptim/orcd/scratch/FlowERrs_results/$DATA_NAME/$EXP_NAME/cas_beam/"
+    export RESULT_PATH="$WORK/results/vanilla"
     echo "Running vanilla beam search"
     sh scripts/search_multiGPU.sh
 fi
