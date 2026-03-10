@@ -46,7 +46,11 @@ def init_model(args):
     checkpoint_exists = bool(checkpoint_path) and os.path.isfile(checkpoint_path)
     if checkpoint_exists:
         log_rank_0(f"Loading pretrained state from {checkpoint_path}")
+<<<<<<< HEAD
         state = torch.load(checkpoint_path, weights_only=False,  map_location=torch.device("cpu"))
+=======
+        state = torch.load(checkpoint_path, weights_only=False, map_location=torch.device("cpu"))
+>>>>>>> b508043 (some changes)
         pretrain_args = state["args"]
         pretrain_args.local_rank = args.local_rank
 
@@ -94,6 +98,9 @@ def init_model(args):
 
     return graph_attn_model, flow_model, state
 
+def _collate_first(batch):
+    return batch[0]
+
 def init_loader(args, dataset, batch_size: int, bucket_size: int = 1000,
                 shuffle: bool = False, epoch: int = None, use_sort: bool =True):
     if use_sort: dataset.sort()
@@ -115,7 +122,7 @@ def init_loader(args, dataset, batch_size: int, bucket_size: int = 1000,
         batch_size=1,
         sampler=sampler,
         num_workers=args.num_workers,
-        collate_fn=lambda _batch: _batch[0],
+        collate_fn=_collate_first,
         pin_memory=True
     )
 

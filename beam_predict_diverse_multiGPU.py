@@ -250,7 +250,7 @@ def main_multi_gpu(args):
 
 
 if __name__ == "__main__":
-    mp.set_start_method('spawn')
+    mp.set_start_method('fork')
 
     args = Args
     logger = setup_logger(args, "beam_diverse")
