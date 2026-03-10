@@ -48,10 +48,11 @@ def expand_diverse(args, model, flow, data_loader):
 
         batch_size, n, n = x0.shape
 
-        if (batch_size*n*n) <= 5*360*360:
-            traj_be, traj_cv = predict_batch_diverse(args, batch_idx, data_batch, model, flow, 1)
-        else:
-            traj_be, traj_cv = predict_batch_diverse(args, batch_idx, data_batch, model, flow, 2)
+        with torch.no_grad():
+            if (batch_size*n*n) <= 5*360*360:
+                traj_be, traj_cv = predict_batch_diverse(args, batch_idx, data_batch, model, flow, 1)
+            else:
+                traj_be, traj_cv = predict_batch_diverse(args, batch_idx, data_batch, model, flow, 2)
 
         last_step = traj_be[-1]  # (total_samples, n, n)
         product_BE_matrices = custom_round(last_step)

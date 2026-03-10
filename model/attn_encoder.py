@@ -7,7 +7,7 @@ from utils.data_utils import ELEM_LIST
 from model.flow_matching import zero_center_func
 
 
-def timestep_embedding(timesteps, dim, max_period=10000):
+def timestep_embedding(timesteps:torch.Tensor, dim:int, max_period:int =10000) -> torch.Tensor:
     """Create sinusoidal timestep embeddings.
 
     :param timesteps: a 1-D Tensor of N indices, one per batch element. These may be fractional.
@@ -34,25 +34,25 @@ def zero_center_output(x_batch, ori_node_mask_batch):
     return map_zero_center(x_batch, node_mask_batch).masked_fill(~(node_mask_batch.bool()), 1e-19)
 
 class RBFExpansion(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args:Args):
         """
         Adapted from Schnet.
         https://github.com/atomistic-machine-learning/SchNet/blob/master/src/schnet/nn/layers/rbf.py
         """
         super().__init__()
         self.args = args
-        self.low = args.rbf_low
-        self.high = args.rbf_high
-        self.gap = args.rbf_gap
+        self.low: float = args.rbf_low
+        self.high: float = args.rbf_high
+        self.gap: float = args.rbf_gap
 
-        self.xrange = self.high - self.low
+        self.xrange: float = self.high - self.low
 
         centers = torch.linspace(self.low, self.high,
             int(torch.ceil(torch.tensor(self.xrange / self.gap))))
         self.register_buffer('centers', centers)
         self.dim = len(self.centers)
 
-    def forward(self, matrix, matrix_mask):
+    def forward(self, matrix: torch.Tensor, matrix_mask: torch.Tensor):
         matrix = matrix.masked_fill(matrix_mask, 1e9)
         matrix = matrix.unsqueeze(-1)  # Add a new dimension at the end
         # Compute the RBF
@@ -78,12 +78,12 @@ class MultiHeadedRelAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.final_linear = nn.Linear(model_dim, model_dim)
 
-        self.u = u if u is not None else \
+        self.u: torch.Tensor = u if u is not None else \
             nn.Parameter(torch.randn(self.d_model), requires_grad=True)
-        self.v = v if v is not None else \
+        self.v: torch.Tensor = v if v is not None else \
             nn.Parameter(torch.randn(self.d_model), requires_grad=True)
 
-    def forward(self, inputs, mask, rel_emb):
+    def forward(self, inputs:torch.FloatTensor, mask:torch.Tensor[int], rel_emb:torch.Tensor):
         """
         Compute the context vector and the attention vectors.
 
@@ -100,9 +100,9 @@ class MultiHeadedRelAttention(nn.Module):
            * Attention vector in heads ``(batch, head, query_len, key_len)``.
         """
 
-        batch_size = inputs.size(0)
-        dim_per_head = self.dim_per_head
-        head_count = self.head_count
+        batch_size: int = inputs.size(0)
+        dim_per_head: int = self.dim_per_head
+        head_count: int = self.head_count
 
         def shape(x):
             """Projection."""
@@ -117,11 +117,11 @@ class MultiHeadedRelAttention(nn.Module):
         key = self.linear_keys(inputs)
         value = self.linear_values(inputs)
 
-        key = shape(key)                # (b, t_k, h) -> (b, head, t_k, h/head)
-        value = shape(value)
-        query = shape(query)            # (b, t_q, h) -> (b, head, t_q, h/head)
+        key: tuple[int] = shape(key)                # (b, t_k, h) -> (b, head, t_k, h/head)
+        value:tuple[int] = shape(value)
+        query:tuple[int] = shape(query)            # (b, t_q, h) -> (b, head, t_q, h/head)
 
-        key_len = key.size(2)
+        key_len:int = key.size(2)
         query_len = query.size(2)
 
         # 2) Calculate and scale scores.
@@ -227,7 +227,7 @@ class AttnEncoderXL(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
-        self.num_layers = args.enc_num_layers
+        self.num_layers:int = args.enc_num_layers
         self.post_processing_layers = args.post_processing_layers
         self.d_model = args.emb_dim
         self.heads = args.enc_heads
@@ -362,7 +362,7 @@ class AttnEncoderXL(nn.Module):
         
         # a_i - atom embeddings after multiheaded attention on atom embeddings + rbf expansion
 
-        # draw out diagram of model (model figure)
+        
         v_cv = self.chiral_head(a_i).squeeze(-1) if self.use_chirality else None  # b,n or None
 
         # diagonal prediction
