@@ -4,8 +4,7 @@
 #SBATCH --mail-user=ptim@mit.edu
 #SBATCH -p mi3258x
 #SBATCH -N 1
-#SBATCH -n 16
-#SBATCH --mem=256G
+#SBATCH --exclusive
 #SBATCH --time=10:00:00
 #SBATCH --output=/work1/connorcoley/ptim/logs/%x_%j.out
 #SBATCH --error=/work1/connorcoley/ptim/logs/%x_%j.err
