@@ -176,11 +176,15 @@ def worker(rank, args, chunk, chunk_idx, lock, queue):
         else:
             ori_reactant = line.strip()
             products = []
-        reactant = reactant_process(ori_reactant)
+        try:
+            reactant = reactant_process(ori_reactant)
+        except Exception as e:
+            print(f"Skipping unparseable reactant: {e}")
+            continue
         graph = nx.DiGraph()
         graph.add_node(reactant, depth=1)
         graph_list.append((graph, reactant, (ori_reactant, products)))
-        frontiers_dict[idx].append(reactant)
+        frontiers_dict[len(graph_list) - 1].append(reactant)
 
     beam_search_diverse(args, attn_model, flow, frontiers_dict, graph_list)
 

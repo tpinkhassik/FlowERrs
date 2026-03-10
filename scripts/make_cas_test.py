@@ -61,14 +61,21 @@ def convert_dative_bonds(mol):
     return mol
 
 
+_smi_params = Chem.SmilesWriteParams()
+_smi_params.allHsExplicit = True
+_smi_params.isomericSmiles = False
+_smi_params.includeDativeBonds = False
+
+
 def mol_to_explicit_h_smi(mol):
     """Add explicit Hs and return SMILES with all Hs shown.
     Returns (None, None) if conversion fails."""
-    mol = convert_dative_bonds(mol)
-    if mol is None:
+    # Reject wildcard atoms — FlowER can't handle them
+    if any(a.GetAtomicNum() == 0 for a in mol.GetAtoms()):
         return None, None
     mol = Chem.AddHs(mol, explicitOnly=False)
-    return Chem.MolToSmiles(mol, isomericSmiles=False, allHsExplicit=True), mol
+    smi = Chem.MolToSmiles(mol, _smi_params)
+    return smi, mol
 
 
 def to_clean_smi(explicit_h_smi):
